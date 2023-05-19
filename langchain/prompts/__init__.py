@@ -13,6 +13,8 @@ from langchain.prompts.few_shot import FewShotPromptTemplate
 from langchain.prompts.few_shot_with_templates import FewShotPromptWithTemplates
 from langchain.prompts.loading import load_prompt
 from langchain.prompts.prompt import Prompt, PromptTemplate
+from langchain.prompts.database.cassandra import createCassandraPromptTemplate
+from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 
 __all__ = [
     "BasePromptTemplate",
@@ -29,4 +31,6 @@ __all__ = [
     "SystemMessagePromptTemplate",
     "ChatMessagePromptTemplate",
     "BaseChatPromptTemplate",
+    "DependencyfulPromptTemplate",
+    "createCassandraPromptTemplate",
 ]
