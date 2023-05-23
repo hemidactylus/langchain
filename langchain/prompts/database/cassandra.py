@@ -16,14 +16,22 @@ def createCassandraPromptTemplate(session, keyspace, template, input_variables, 
 
     # we need a callable that receives a 'dependencies' dict argument and other keyword args = columns in primary keys
     # and returns the values as in the field_mapper provided dict
-    dataGetter = CassandraExtractor(session, keyspace, field_mapper, literal_nones)
-    
+    dataExtractor = CassandraExtractor(session, keyspace, field_mapper, literal_nones)
+    def _dataGetter(deps, **kwargs):
+        # we ignore dependencies in this case, knowing it's not required
+        # by the extractor contract
+        return dataExtractor(**kwargs)
+
+    # let's store the extractor in the dependencies.
+    # Should it ever need to be accessed (but no immediate reason to)
+    cptDependencies = {'extractor': dataExtractor}
+
     cassandraPromptTemplate = DependencyfulPromptTemplate(
         template=template,
-        dependencies={'session': session, 'keyspace': keyspace},
-        getter=dataGetter,
+        dependencies=cptDependencies,
+        getter=_dataGetter,
         input_variables=input_variables,
-        forceGetterArguments=dataGetter.requiredParameters,
+        forceGetterArguments=dataExtractor.requiredParameters,
     )
     
     return cassandraPromptTemplate
