@@ -2,6 +2,7 @@
 import hashlib
 import inspect
 import json
+from functools import lru_cache
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, cast
 
@@ -14,12 +15,22 @@ try:
 except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
+from cassio.keyvalue import KVCache
+from cassio.vector import VectorDBTable
+
 from langchain.embeddings.base import Embeddings
 from langchain.schema import Generation
 from langchain.vectorstores.redis import Redis as RedisVectorstore
 
 RETURN_VAL_TYPE = List[Generation]
 
+DEFAULT_CASSANDRA_CACHE_TABLE_NAME = 'langchain_response_cache'
+DEFAULT_CASSANDRA_CACHE_TTL_SECONDS = None
+#
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH = 1
+CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE = 16
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD = 0.85
+CASSANDRA_SEMANTIC_CACHE_TABLE_NAME_PREFIX = 'semantic_cache_'
 
 def _hash(_input: str) -> str:
     """Use a deterministic hashing approach."""
@@ -390,3 +401,174 @@ class GPTCache(BaseCache):
             gptcache_instance.flush()
 
         self.gptcache_dict.clear()
+
+def serializeGenerationsToString(generations: RETURN_VAL_TYPE) -> str:
+    return json.dumps([
+        gen.text
+        for gen in generations
+    ])
+
+def deserializeGenerationsToString(blob_str: str) -> RETURN_VAL_TYPE:
+    return [
+        Generation(text=txt)
+        for txt in json.loads(blob_str)
+    ]
+
+
+class CassandraCache(BaseCache):
+    """
+    Cache that uses Cassandra / Astra DB as a backend.
+
+    It uses a single table. The lookup keys (also primary keys) are:
+        - prompt, a string
+        - llm_string, a string deterministic representation of the model parameters.
+          This is to keep collision between same prompts for two models separate.
+
+    # TODO: should a cache hit "reset" the ttl ?
+            (now: no. It can be done, not sure if 'natural')
+    """
+
+    def __init__(self, session: Session, keyspace: str,
+                 tableName: str = DEFAULT_CASSANDRA_CACHE_TABLE_NAME,
+                 ttl_seconds=DEFAULT_CASSANDRA_CACHE_TTL_SECONDS):
+        """Initialize with a ready session and a keyspace name."""
+        self.ttlSeconds = ttl_seconds
+        self.kvCache = KVCache(session, keyspace, tableName, keys=['llm_string', 'prompt'])
+
+
+    def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
+        """Look up based on prompt and llm_string."""
+        foundBlob = self.kvCache.get(
+            {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
+        )
+        if foundBlob:
+            return deserializeGenerationsToString(foundBlob)
+        else:
+            return None
+
+    def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
+        """Update cache based on prompt and llm_string."""
+        blobToStore = serializeGenerationsToString(return_val)
+        self.kvCache.put(
+            {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
+            blobToStore,
+            self.ttlSeconds,
+        )
+
+    def clear(self, **kwargs: Any) -> None:
+        """Clear cache."""
+        self.kvCache.clear()
+
+
+class CassandraSemanticCache(BaseCache):
+    """
+    Cache that uses Cassandra as a vector-store backend,
+    based on the CEP-30 drafts at the moment.
+
+    - TTL is not supported yet
+    - As soon as cassandra admist LIMIT > total rows in table (alpha crashes now),
+      raise CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH to 32 or so.
+    """
+
+    def __init__(
+        self, session: Session, keyspace: str,
+        embedding: Embeddings,
+        distance_metric: str = 'dot',
+        score_threshold: float = CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD,
+        num_rows_to_fetch: int = CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH,
+        table_name_prefix: str = CASSANDRA_SEMANTIC_CACHE_TABLE_NAME_PREFIX,
+    ):
+        """Initialize the cache with all relevant parameters.
+        Args:
+            session (cassandra.cluster.Session): an open Cassandra session
+            keyspace (str): the keyspace to use for storing the cache
+            embedding (Embedding): Embedding provider for semantic encoding and search.
+            distance_metric (str, 'dot')
+            score_threshold (optional float)
+        The default score threshold is tuned to the default metric.
+        Tune it carefully yourself if switching to another distance metric.
+        """
+        self.session = session
+        self.keyspace = keyspace
+        self.embedding = embedding
+        self.score_threshold = score_threshold
+        self.distance_metric = distance_metric
+        self.num_rows_to_fetch = num_rows_to_fetch
+        self.table_name_prefix = table_name_prefix
+        # A single instance of these can handle a number of 'llm_strings'.
+        # We map each to a separate table. These are cached here:
+        self.table_cache = {}  # model_str -> table_name
+        # The contract for this class has separate lookup and update:
+        # in order to spare some embedding calculations we cache them between
+        # the two calls.
+        # Note: each instance of this class has its own `_get_embedding` with
+        # its own lru.
+        @lru_cache(maxsize=CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE)
+        def _cache_embedding(text):
+            return self.embedding.embed_query(text=text)
+        self._get_embedding = _cache_embedding
+        self._embedding_dimension = None
+
+    def _getEmbeddingDimension(self):
+        if self._embedding_dimension is None:
+            self._embedding_dimension = len(self._get_embedding(
+                text="This is a sample sentence."
+            ))
+        return self._embedding_dimension
+
+    def clear(self, **kwargs: Any) -> None:
+        """Clear semantic cache for a given llm_string."""
+        if 'llm_string' not in kwargs:
+            raise ValueError('llm_string parameter must be passed to clear()')
+        else:
+            vectorTable = self._getVectorTable(kwargs['llm_string'])
+            vectorTable.clear()
+
+    def _getVectorTable(self, llm_string):
+        if llm_string not in self.table_cache:
+            #
+            tableName = f'{self.table_name_prefix}{_hash(llm_string)}'
+            #
+            self.table_cache[llm_string] = VectorDBTable(
+                self.session,
+                self.keyspace,
+                tableName=tableName,
+                embeddingDimension=self._getEmbeddingDimension(),
+                autoID=True,
+            )
+        #
+        return self.table_cache[llm_string]
+
+    def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
+        """Update cache based on prompt and llm_string."""
+        vectorTable = self._getVectorTable(llm_string)
+        #
+        embedding_vector = self._get_embedding(text=prompt)
+        metadata = {
+            'generations_str': serializeGenerationsToString(return_val),
+        }
+        #
+        vectorTable.put(
+            document=prompt,
+            embedding_vector=embedding_vector,
+            metadata=metadata,
+        )
+
+    def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
+        """Look up based on prompt and llm_string."""
+        vectorTable = self._getVectorTable(llm_string)
+        #
+        promptEmbedding: List[float] = self._get_embedding(text=prompt)
+        hits = vectorTable.search(
+            embedding_vector=promptEmbedding,
+            topK=1,
+            maxRowsToRetrieve=self.num_rows_to_fetch,
+            metric=self.distance_metric,
+            metricThreshold=self.score_threshold,
+        )
+        if hits:
+            hit = hits[0]
+            metadata = hit['metadata']
+            return deserializeGenerationsToString(metadata['generations_str'])
+        else:
+            return None
