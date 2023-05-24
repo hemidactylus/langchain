@@ -3,6 +3,7 @@ from langchain.vectorstores.analyticdb import AnalyticDB
 from langchain.vectorstores.annoy import Annoy
 from langchain.vectorstores.atlas import AtlasDB
 from langchain.vectorstores.base import VectorStore
+from langchain.vectorstores.cassandra import Cassandra
 from langchain.vectorstores.chroma import Chroma
 from langchain.vectorstores.deeplake import DeepLake
 from langchain.vectorstores.docarray import DocArrayHnswSearch, DocArrayInMemorySearch
@@ -43,4 +44,5 @@ __all__ = [
     "LanceDB",
     "DocArrayHnswSearch",
     "DocArrayInMemorySearch",
+    "Cassandra",
 ]
