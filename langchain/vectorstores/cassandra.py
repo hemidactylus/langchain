@@ -1,6 +1,7 @@
 """Wrapper around Cassandra vector-store capabilities, based on cassIO."""
+from __future__ import annotations
 
-import uuid
+import hashlib
 from typing import TypeVar, Type, Iterable, Optional, List, Any, Tuple
 
 from cassandra.cluster import Session
@@ -15,9 +16,16 @@ from langchain.docstore.document import Document
 CVST = TypeVar("CVST", bound="Cassandra")
 
 # How many multiples of K are retrieved in a search
-CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR = 3
+CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR = 4
 # Default number of documents ultimately returned in a search
-CASSANDRA_VECTORSTORE_DEFAULT_K = 12
+CASSANDRA_VECTORSTORE_DEFAULT_K = 3
+#
+CASSANDRA_VECTORSTORE_DEFAULT_TTL_SECONDS = None
+
+
+def _hash(_input: str) -> str:
+    """Use a deterministic hashing approach."""
+    return hashlib.md5(_input.encode()).hexdigest()
 
 
 class Cassandra(VectorStore):
@@ -52,6 +60,7 @@ class Cassandra(VectorStore):
         keyspace: str,
         table_name: str,
         overfetch_factor = CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR,
+        ttl_seconds: int | None = CASSANDRA_VECTORSTORE_DEFAULT_TTL_SECONDS,
     ) -> None:
         """Create a vector table."""
         self.embedding = embedding
@@ -59,6 +68,7 @@ class Cassandra(VectorStore):
         self.keyspace = keyspace
         self.table_name = table_name
         self.overfetch_factor = overfetch_factor
+        self.ttlSeconds = ttl_seconds
         #
         self._embedding_dimension = None
         #
@@ -71,8 +81,18 @@ class Cassandra(VectorStore):
         )
 
     def delete_collection(self) -> None:
-        """Delete the collection."""
+        """
+        Just an alias for `clear`
+        (to better align with other VectorStore implementations).
+        """
+        self.clear()
+
+    def clear(self) -> None:
+        """Empty the collection."""
         self.table.clear()
+
+    def delete_by_document_id(self, document_id: str) -> None:
+        return self.table.delete(document_id)
 
     def add_texts(
         self,
@@ -91,27 +111,35 @@ class Cassandra(VectorStore):
         Returns:
             List[str]: List of IDs of the added texts.
         """
+        _texts = list(texts)  # lest it be a generator or something
         if ids is None:
-            ids = [str(uuid.uuid1()) for _ in texts]
+            # unless otherwise specified, we have deterministic IDs:
+            # re-inserting an existing document will not create a duplicate.
+            # (and effectively update the metadata)
+            ids = [_hash(text) for text in _texts]
         if metadatas is None:
-            metadats = [{} for _ in texts]
+            metadatas = [{} for _ in _texts]
         #
-        embedding_vectors = self.embedding.embed_documents(texts)
-        for text, embedding_vector, text_id, metadata in zip(texts, embedding_vectors, ids, metadatas):
+        ttlSeconds = kwargs.get('ttl_seconds', self.ttlSeconds)
+        #
+        embedding_vectors = self.embedding.embed_documents(_texts)
+        for text, embedding_vector, text_id, metadata in zip(_texts, embedding_vectors, ids, metadatas):
             self.table.put(
-                text,
-                embedding_vector,
-                text_id,
-                metadata,
+                document=text,
+                embedding_vector=embedding_vector,
+                document_id=text_id,
+                metadata=metadata,
+                ttlSeconds=ttlSeconds,
             )
         #
         return ids
 
-    def similarity_search_with_score_by_vector(
+    # id-returning search facilities
+    def similarity_search_with_score_id_by_vector(
         self,
         embedding: List[float],
         k: int = CASSANDRA_VECTORSTORE_DEFAULT_K,
-    ) -> List[Tuple[Document, float]]:
+    ) -> List[Tuple[Document, float, str]]:
         """Return docs most similar to embedding vector.
 
         No support for `filter` query (on metadata) along with vector search.
@@ -120,7 +148,7 @@ class Cassandra(VectorStore):
             embedding (str): Embedding to look up documents similar to.
             k (int): Number of Documents to return. Defaults to 4.
         Returns:
-            List of Documents most similar to the query vector.
+            List of (Document, score, id), the most similar to the query vector.
         """
         hits = self.table.search(
             embedding_vector=embedding,
@@ -138,8 +166,45 @@ class Cassandra(VectorStore):
                     metadata=hit['metadata'],
                 ),
                 0.5 + 0.5*hit['distance'],
+                hit['document_id'],
             )
             for hit in hits
+        ]
+
+    def similarity_search_with_score_id(
+        self,
+        query: str,
+        k: int = CASSANDRA_VECTORSTORE_DEFAULT_K,
+        **kwargs: Any,
+    ) -> List[Tuple[Document, float, str]]:
+        embedding_vector = self.embedding.embed_query(query)
+        return self.similarity_search_with_score_id_by_vector(
+            embedding=embedding_vector,
+            k=k,
+        )
+
+    # id-unaware search facilities
+    def similarity_search_with_score_by_vector(
+        self,
+        embedding: List[float],
+        k: int = CASSANDRA_VECTORSTORE_DEFAULT_K,
+    ) -> List[Tuple[Document, float]]:
+        """Return docs most similar to embedding vector.
+
+        No support for `filter` query (on metadata) along with vector search.
+
+        Args:
+            embedding (str): Embedding to look up documents similar to.
+            k (int): Number of Documents to return. Defaults to 4.
+        Returns:
+            List of (Document, score), the most similar to the query vector.
+        """
+        return [
+            (doc, score)
+            for (doc, score, docId) in self.similarity_search_with_score_id_by_vector(
+                embedding=embedding,
+                k=k,
+            )
         ]
 
     def similarity_search(
