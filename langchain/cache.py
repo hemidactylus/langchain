@@ -6,11 +6,25 @@ import inspect
 import json
 from functools import lru_cache
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, cast
+from datetime import timedelta
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    cast,
+)
 
 from sqlalchemy import Column, Integer, String, create_engine, select
 from sqlalchemy.engine.base import Engine
 from sqlalchemy.orm import Session
+
+from langchain.utils import get_from_env
 
 try:
     from sqlalchemy.orm import declarative_base
@@ -24,6 +38,8 @@ from langchain.embeddings.base import Embeddings
 from langchain.schema import Generation
 from langchain.vectorstores.redis import Redis as RedisVectorstore
 from langchain.llms.base import LLM, get_prompts
+if TYPE_CHECKING:
+    import momento
 
 RETURN_VAL_TYPE = List[Generation]
 
@@ -39,6 +55,39 @@ CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS = None
 def _hash(_input: str) -> str:
     """Use a deterministic hashing approach."""
     return hashlib.md5(_input.encode()).hexdigest()
+
+
+def _dump_generations_to_json(generations: RETURN_VAL_TYPE) -> str:
+    """Dump generations to json.
+
+    Args:
+        generations (RETURN_VAL_TYPE): A list of language model generations.
+
+    Returns:
+        str: Json representing a list of generations.
+    """
+    return json.dumps([generation.dict() for generation in generations])
+
+
+def _load_generations_from_json(generations_json: str) -> RETURN_VAL_TYPE:
+    """Load generations from json.
+
+    Args:
+        generations_json (str): A string of json representing a list of generations.
+
+    Raises:
+        ValueError: Could not decode json string to list of generations.
+
+    Returns:
+        RETURN_VAL_TYPE: A list of generations.
+    """
+    try:
+        results = json.loads(generations_json)
+        return [Generation(**generation_dict) for generation_dict in results]
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"Could not decode json to list of generations: {generations_json}"
+        )
 
 
 class BaseCache(ABC):
@@ -328,7 +377,7 @@ class GPTCache(BaseCache):
         try:
             import gptcache  # noqa: F401
         except ImportError:
-            raise ValueError(
+            raise ImportError(
                 "Could not import gptcache python package. "
                 "Please install it with `pip install gptcache`."
             )
@@ -406,17 +455,181 @@ class GPTCache(BaseCache):
 
         self.gptcache_dict.clear()
 
-def serializeGenerationsToString(generations: RETURN_VAL_TYPE) -> str:
-    return json.dumps([
-        gen.text
-        for gen in generations
-    ])
 
-def deserializeGenerationsToString(blob_str: str) -> RETURN_VAL_TYPE:
-    return [
-        Generation(text=txt)
-        for txt in json.loads(blob_str)
-    ]
+def _ensure_cache_exists(cache_client: momento.CacheClient, cache_name: str) -> None:
+    """Create cache if it doesn't exist.
+
+    Raises:
+        SdkException: Momento service or network error
+        Exception: Unexpected response
+    """
+    from momento.responses import CreateCache
+
+    create_cache_response = cache_client.create_cache(cache_name)
+    if isinstance(create_cache_response, CreateCache.Success) or isinstance(
+        create_cache_response, CreateCache.CacheAlreadyExists
+    ):
+        return None
+    elif isinstance(create_cache_response, CreateCache.Error):
+        raise create_cache_response.inner_exception
+    else:
+        raise Exception(f"Unexpected response cache creation: {create_cache_response}")
+
+
+def _validate_ttl(ttl: Optional[timedelta]) -> None:
+    if ttl is not None and ttl <= timedelta(seconds=0):
+        raise ValueError(f"ttl must be positive but was {ttl}.")
+
+
+class MomentoCache(BaseCache):
+    """Cache that uses Momento as a backend. See https://gomomento.com/"""
+
+    def __init__(
+        self,
+        cache_client: momento.CacheClient,
+        cache_name: str,
+        *,
+        ttl: Optional[timedelta] = None,
+        ensure_cache_exists: bool = True,
+    ):
+        """Instantiate a prompt cache using Momento as a backend.
+
+        Note: to instantiate the cache client passed to MomentoCache,
+        you must have a Momento account. See https://gomomento.com/.
+
+        Args:
+            cache_client (CacheClient): The Momento cache client.
+            cache_name (str): The name of the cache to use to store the data.
+            ttl (Optional[timedelta], optional): The time to live for the cache items.
+                Defaults to None, ie use the client default TTL.
+            ensure_cache_exists (bool, optional): Create the cache if it doesn't
+                exist. Defaults to True.
+
+        Raises:
+            ImportError: Momento python package is not installed.
+            TypeError: cache_client is not of type momento.CacheClientObject
+            ValueError: ttl is non-null and non-negative
+        """
+        try:
+            from momento import CacheClient
+        except ImportError:
+            raise ImportError(
+                "Could not import momento python package. "
+                "Please install it with `pip install momento`."
+            )
+        if not isinstance(cache_client, CacheClient):
+            raise TypeError("cache_client must be a momento.CacheClient object.")
+        _validate_ttl(ttl)
+        if ensure_cache_exists:
+            _ensure_cache_exists(cache_client, cache_name)
+
+        self.cache_client = cache_client
+        self.cache_name = cache_name
+        self.ttl = ttl
+
+    @classmethod
+    def from_client_params(
+        cls,
+        cache_name: str,
+        ttl: timedelta,
+        *,
+        configuration: Optional[momento.config.Configuration] = None,
+        auth_token: Optional[str] = None,
+        **kwargs: Any,
+    ) -> MomentoCache:
+        """Construct cache from CacheClient parameters."""
+        try:
+            from momento import CacheClient, Configurations, CredentialProvider
+        except ImportError:
+            raise ImportError(
+                "Could not import momento python package. "
+                "Please install it with `pip install momento`."
+            )
+        if configuration is None:
+            configuration = Configurations.Laptop.v1()
+        auth_token = auth_token or get_from_env("auth_token", "MOMENTO_AUTH_TOKEN")
+        credentials = CredentialProvider.from_string(auth_token)
+        cache_client = CacheClient(configuration, credentials, default_ttl=ttl)
+        return cls(cache_client, cache_name, ttl=ttl, **kwargs)
+
+    def __key(self, prompt: str, llm_string: str) -> str:
+        """Compute cache key from prompt and associated model and settings.
+
+        Args:
+            prompt (str): The prompt run through the language model.
+            llm_string (str): The language model version and settings.
+
+        Returns:
+            str: The cache key.
+        """
+        return _hash(prompt + llm_string)
+
+    def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
+        """Lookup llm generations in cache by prompt and associated model and settings.
+
+        Args:
+            prompt (str): The prompt run through the language model.
+            llm_string (str): The language model version and settings.
+
+        Raises:
+            SdkException: Momento service or network error
+
+        Returns:
+            Optional[RETURN_VAL_TYPE]: A list of language model generations.
+        """
+        from momento.responses import CacheGet
+
+        generations = []
+
+        get_response = self.cache_client.get(
+            self.cache_name, self.__key(prompt, llm_string)
+        )
+        if isinstance(get_response, CacheGet.Hit):
+            value = get_response.value_string
+            generations = _load_generations_from_json(value)
+        elif isinstance(get_response, CacheGet.Miss):
+            pass
+        elif isinstance(get_response, CacheGet.Error):
+            raise get_response.inner_exception
+        return generations if generations else None
+
+    def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
+        """Store llm generations in cache.
+
+        Args:
+            prompt (str): The prompt run through the language model.
+            llm_string (str): The language model string.
+            return_val (RETURN_VAL_TYPE): A list of language model generations.
+
+        Raises:
+            SdkException: Momento service or network error
+            Exception: Unexpected response
+        """
+        key = self.__key(prompt, llm_string)
+        value = _dump_generations_to_json(return_val)
+        set_response = self.cache_client.set(self.cache_name, key, value, self.ttl)
+        from momento.responses import CacheSet
+
+        if isinstance(set_response, CacheSet.Success):
+            pass
+        elif isinstance(set_response, CacheSet.Error):
+            raise set_response.inner_exception
+        else:
+            raise Exception(f"Unexpected response: {set_response}")
+
+    def clear(self, **kwargs: Any) -> None:
+        """Clear the cache.
+
+        Raises:
+            SdkException: Momento service or network error
+        """
+        from momento.responses import CacheFlush
+
+        flush_response = self.cache_client.flush_cache(self.cache_name)
+        if isinstance(flush_response, CacheFlush.Success):
+            pass
+        elif isinstance(flush_response, CacheFlush.Error):
+            raise flush_response.inner_exception
 
 
 class CassandraCache(BaseCache):
@@ -446,13 +659,13 @@ class CassandraCache(BaseCache):
             {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
         )
         if foundBlob:
-            return deserializeGenerationsToString(foundBlob)
+            return _load_generations_from_json(foundBlob)
         else:
             return None
 
     def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
         """Update cache based on prompt and llm_string."""
-        blobToStore = serializeGenerationsToString(return_val)
+        blobToStore = _dump_generations_to_json(return_val)
         self.kvCache.put(
             {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
             blobToStore,
@@ -485,10 +698,6 @@ class CassandraSemanticCache(BaseCache):
     """
     Cache that uses Cassandra as a vector-store backend,
     based on the CEP-30 drafts at the moment.
-
-    - TTL is not supported yet
-    - As soon as cassandra admist LIMIT > total rows in table (alpha crashes now),
-      raise CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH to 32 or so.
     """
 
     def __init__(
@@ -579,7 +788,7 @@ class CassandraSemanticCache(BaseCache):
         #
         embedding_vector = self._get_embedding(text=prompt)
         metadata = {
-            'generations_str': serializeGenerationsToString(return_val),
+            'generations_str': _dump_generations_to_json(return_val),
         }
         documentId = _hash(prompt)
         #
@@ -619,7 +828,7 @@ class CassandraSemanticCache(BaseCache):
             metadata = hit['metadata']
             return (
                 hit['document_id'],
-                deserializeGenerationsToString(metadata['generations_str']),
+                _load_generations_from_json(metadata['generations_str']),
             )
         else:
             return None
