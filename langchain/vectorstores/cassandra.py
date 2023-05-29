@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from typing import TypeVar, Type, Iterable, Optional, List, Any, Tuple
 
+import numpy as np
 from cassandra.cluster import Session
 
 from cassio.vector import VectorDBTable
@@ -11,6 +12,7 @@ from cassio.vector import VectorDBTable
 from langchain.embeddings.base import Embeddings
 from langchain.vectorstores.base import VectorStore
 from langchain.docstore.document import Document
+from langchain.vectorstores.utils import maximal_marginal_relevance
 
 
 CVST = TypeVar("CVST", bound="Cassandra")
@@ -21,6 +23,8 @@ CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR = 4
 CASSANDRA_VECTORSTORE_DEFAULT_K = 3
 #
 CASSANDRA_VECTORSTORE_DEFAULT_TTL_SECONDS = None
+#
+CASSANDRA_VECTORSTORE_DEFAULT_MMR_LAMBDA_MULT = 0.5
 
 
 def _hash(_input: str) -> str:
@@ -261,6 +265,95 @@ class Cassandra(VectorStore):
             query,
             k,
             **kwargs,
+        )
+
+    def max_marginal_relevance_search_by_vector(
+        self,
+        embedding: List[float],
+        k: int = CASSANDRA_VECTORSTORE_DEFAULT_K,
+        overfetch_factor: Optional[int] = CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR,
+        lambda_mult: float = CASSANDRA_VECTORSTORE_DEFAULT_MMR_LAMBDA_MULT,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """Return docs selected using the maximal marginal relevance.
+        Maximal marginal relevance optimizes for similarity to query AND diversity
+        among selected documents.
+        Args:
+            embedding: Embedding to look up documents similar to.
+            k: Number of Documents to return.
+            overfetch_factor: this many times k is the number of
+                              Documents to fetch to pass to MMR algorithm.
+            lambda_mult: Number between 0 and 1 that determines the degree
+                        of diversity among the results with 0 corresponding
+                        to maximum diversity and 1 to minimum diversity.
+        Returns:
+            List of Documents selected by maximal marginal relevance.
+        """
+        # this line is useless until better handling of default hierarchy
+        _overfetch_factor = overfetch_factor or self.overfetch_factor
+        fetch_k = k * _overfetch_factor
+        #
+        prefetchHits = self.table.search(
+            embedding_vector=embedding,
+            topK=fetch_k,
+            maxRowsToRetrieve=fetch_k,
+            metric='cos',
+            metricThreshold=None,
+        )
+        # let the mmr utility pick the *indices* in the above array
+        mmrChosenIndices = maximal_marginal_relevance(
+            np.array(embedding, dtype=np.float32),
+            [
+                pfHit['embedding_vector']
+                for pfHit in prefetchHits
+            ],
+            k=k,
+            lambda_mult=lambda_mult,
+        )
+        mmrHits = [
+            pfHit
+            for pfIndex, pfHit in enumerate(prefetchHits)
+            if pfIndex in mmrChosenIndices
+        ]
+        return [
+            Document(
+                page_content=hit['document'],
+                metadata=hit['metadata'],
+            )
+            for hit in mmrHits
+        ]
+
+    def max_marginal_relevance_search(
+        self,
+        query: str,
+        k: int = CASSANDRA_VECTORSTORE_DEFAULT_K,
+        overfetch_factor: Optional[int] = CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR,
+        lambda_mult: float = CASSANDRA_VECTORSTORE_DEFAULT_MMR_LAMBDA_MULT,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """Return docs selected using the maximal marginal relevance.
+        Maximal marginal relevance optimizes for similarity to query AND diversity
+        among selected documents.
+        Args:
+            query: Text to look up documents similar to.
+            k: Number of Documents to return.
+            overfetch_factor: this many times k is the number of
+                              Documents to fetch to pass to MMR algorithm.
+            lambda_mult: Number between 0 and 1 that determines the degree
+                        of diversity among the results with 0 corresponding
+                        to maximum diversity and 1 to minimum diversity.
+                        Optional.
+        Returns:
+            List of Documents selected by maximal marginal relevance.
+        """
+        # this line is useless until better handling of default hierarchy
+        _overfetch_factor = overfetch_factor or self.overfetch_factor
+        embedding_vector = self.embedding.embed_query(query)
+        return self.max_marginal_relevance_search_by_vector(
+            embedding_vector,
+            k,
+            _overfetch_factor,
+            lambda_mul=lambda_mult,
         )
 
     @classmethod
