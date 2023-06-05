@@ -12,8 +12,6 @@ from langchain.schema import (
 )
 
 
-from cassio.history import StoredBlobHistory
-
 DEFAULT_TABLE_NAME = 'langchain_chat_history'
 DEFAULT_TTL_SECONDS = None
 
@@ -22,6 +20,13 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
 
     def __init__(self, session_id, session, keyspace,
                  tableName=DEFAULT_TABLE_NAME, ttl_seconds=DEFAULT_TTL_SECONDS):
+        try:
+            from cassio.history import StoredBlobHistory
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
         self.sessionId = session_id
         self.ttlSeconds = ttl_seconds
         self.blobHistory = StoredBlobHistory(session, keyspace, tableName)

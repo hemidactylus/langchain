@@ -7,12 +7,18 @@ from typing import List, Any, Dict, Callable
 
 from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 
-from cassio.db_extractor import CassandraExtractor
-
 # Since subclassing for thins one is a mess, with pydantic and so many changed parameters,
 # we opt for a factory function
 
 def createCassandraPromptTemplate(session, keyspace, template, input_variables, field_mapper, literal_nones=False):
+
+    try:
+        from cassio.db_extractor import CassandraExtractor
+    except (ImportError, ModuleNotFoundError):
+        raise ValueError(
+            "Could not import cassio python package. "
+            "Please install it with `pip install cassio`."
+        )
 
     # we need a callable that receives a 'dependencies' dict argument and other keyword args = columns in primary keys
     # and returns the values as in the field_mapper provided dict

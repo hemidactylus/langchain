@@ -8,12 +8,14 @@ from typing import List, Any, Dict, Callable
 
 from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 
-from feast.feature_store import FeatureStore
-from feast.entity import Entity
-from feast.feature_view import FeatureView
+import typing
+if typing.TYPE_CHECKING:
+    from feast.feature_store import FeatureStore
+    from feast.entity import Entity
+    from feast.feature_view import FeatureView
 
-
-def _feast_get_entity_by_name(store: FeatureStore, entityName: str) -> Entity:
+# def _feast_get_entity_by_name(store: FeatureStore, entityName: str) -> Entity:
+def _feast_get_entity_by_name(store, entityName: str):
     return [
         ent
         for ent in store.list_entities()
@@ -21,7 +23,8 @@ def _feast_get_entity_by_name(store: FeatureStore, entityName: str) -> Entity:
     ][0]
 
 
-def _feast_get_entity_join_keys(entity: Entity) -> List[str]:
+# def _feast_get_entity_join_keys(entity: Entity) -> List[str]:
+def _feast_get_entity_join_keys(entity) -> List[str]:
     if hasattr(entity, 'join_keys'):
         # Feast plans to replace `join_key: str` with `join_keys: List[str]`
         return list(entity.join_keys)
@@ -29,7 +32,8 @@ def _feast_get_entity_join_keys(entity: Entity) -> List[str]:
         return [entity.join_key]
 
 
-def _feast_get_feature_view_by_name(store: FeatureStore, featureViewName: str) -> FeatureView:
+# def _feast_get_feature_view_by_name(store: FeatureStore, featureViewName: str) -> FeatureView:
+def _feast_get_feature_view_by_name(store, featureViewName: str):
     return [
         fview
         for fview in store.list_feature_views()
@@ -38,6 +42,16 @@ def _feast_get_feature_view_by_name(store: FeatureStore, featureViewName: str) -
 
 
 def createFeastPromptTemplate(store, template, input_variables, field_mapper):
+
+    try:
+        from feast.feature_store import FeatureStore
+        from feast.entity import Entity
+        from feast.feature_view import FeatureView
+    except (ImportError, ModuleNotFoundError):
+        raise ValueError(
+            "Could not import feast python package. "
+            "Please install it with `pip install \"feast>=0.26\"`."
+        )
 
     # inspection of the store allows to reconstruc this:
     neededFeatureViews = [

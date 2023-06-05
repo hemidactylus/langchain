@@ -5,9 +5,10 @@ import hashlib
 from typing import TypeVar, Type, Iterable, Optional, List, Any, Tuple
 
 import numpy as np
-from cassandra.cluster import Session
 
-from cassio.vector import VectorDBTable
+import typing
+if typing.TYPE_CHECKING:
+    from cassandra.cluster import Session
 
 from langchain.embeddings.base import Embeddings
 from langchain.vectorstores.base import VectorStore
@@ -66,6 +67,13 @@ class Cassandra(VectorStore):
         overfetch_factor = CASSANDRA_VECTORSTORE_DEFAULT_OVERFETCH_FACTOR,
         ttl_seconds: int | None = CASSANDRA_VECTORSTORE_DEFAULT_TTL_SECONDS,
     ) -> None:
+        try:
+            from cassio.vector import VectorDBTable
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
         """Create a vector table."""
         self.embedding = embedding
         self.session = session

@@ -31,9 +31,6 @@ try:
 except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
-from cassio.keyvalue import KVCache
-from cassio.vector import VectorDBTable
-
 from langchain.embeddings.base import Embeddings
 from langchain.schema import Generation
 from langchain.vectorstores.redis import Redis as RedisVectorstore
@@ -649,6 +646,14 @@ class CassandraCache(BaseCache):
                  tableName: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
                  ttl_seconds: int | None = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS):
         """Initialize with a ready session and a keyspace name."""
+        try:
+            from cassio.keyvalue import KVCache
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
+
         self.ttlSeconds = ttl_seconds
         self.kvCache = KVCache(session, keyspace, tableName, keys=['llm_string', 'prompt'])
 
@@ -719,6 +724,13 @@ class CassandraSemanticCache(BaseCache):
         The default score threshold is tuned to the default metric.
         Tune it carefully yourself if switching to another distance metric.
         """
+        try:
+            from cassio.vector import VectorDBTable
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
         self.session = session
         self.keyspace = keyspace
         self.embedding = embedding
