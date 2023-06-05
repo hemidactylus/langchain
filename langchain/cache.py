@@ -724,13 +724,6 @@ class CassandraSemanticCache(BaseCache):
         The default score threshold is tuned to the default metric.
         Tune it carefully yourself if switching to another distance metric.
         """
-        try:
-            from cassio.vector import VectorDBTable
-        except (ImportError, ModuleNotFoundError):
-            raise ValueError(
-                "Could not import cassio python package. "
-                "Please install it with `pip install cassio`."
-            )
         self.session = session
         self.keyspace = keyspace
         self.embedding = embedding
@@ -781,6 +774,13 @@ class CassandraSemanticCache(BaseCache):
 
     def _getVectorTable(self, llm_string):
         if llm_string not in self.table_cache:
+            try:
+                from cassio.vector import VectorDBTable
+            except (ImportError, ModuleNotFoundError):
+                raise ValueError(
+                    "Could not import cassio python package. "
+                    "Please install it with `pip install cassio`."
+                )
             #
             tableName = f'{self.table_name_prefix}{_hash(llm_string)}'
             #
