@@ -13,7 +13,7 @@ from langchain.prompts.base import StringPromptTemplate
 class DependencyfulPromptTemplate(StringPromptTemplate, BaseModel):
 
     dependencies: Dict[str, Any] = Field(exclude=True, default={})
-    getter: Callable[Any, Dict[str, Any]]
+    getter: Callable[[Any], Dict[str, Any]]
     template: str = Field(exclude=True)
     # needed for overriding when e.g. the getter is programmatically built
     forceGetterArguments: List[str] = Field(exclude=True, default=None)
