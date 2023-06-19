@@ -57,4 +57,4 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
 
     def clear(self) -> None:
         """Clear session memory from DB"""
-        self.blobHistory.clearSessionId(self.sessionId)
+        self.blobHistory.clear_session_id(self.sessionId)

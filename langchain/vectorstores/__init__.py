@@ -33,6 +33,7 @@ __all__ = [
     "Qdrant",
     "Milvus",
     "Zilliz",
+    "Cassandra",
     "Chroma",
     "OpenSearchVectorSearch",
     "AtlasDB",
@@ -48,5 +49,4 @@ __all__ = [
     "DocArrayHnswSearch",
     "DocArrayInMemorySearch",
     "Typesense",
-    "Cassandra",
 ]

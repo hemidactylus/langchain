@@ -775,7 +775,7 @@ class CassandraSemanticCache(BaseCache):
     def _getVectorTable(self, llm_string):
         if llm_string not in self.table_cache:
             try:
-                from cassio.vector import VectorDBTable
+                from cassio.vector import VectorTable
             except (ImportError, ModuleNotFoundError):
                 raise ValueError(
                     "Could not import cassio python package. "
@@ -784,12 +784,12 @@ class CassandraSemanticCache(BaseCache):
             #
             tableName = f'{self.table_name_prefix}{_hash(llm_string)}'
             #
-            self.table_cache[llm_string] = VectorDBTable(
-                self.session,
-                self.keyspace,
-                tableName=tableName,
-                embeddingDimension=self._getEmbeddingDimension(),
-                autoID=False,
+            self.table_cache[llm_string] = VectorTable(
+                session=self.session,
+                keyspace=self.keyspace,
+                table=tableName,
+                embedding_dimension=self._getEmbeddingDimension(),
+                auto_id=False,
             )
         #
         return self.table_cache[llm_string]
@@ -809,7 +809,7 @@ class CassandraSemanticCache(BaseCache):
             embedding_vector=embedding_vector,
             document_id=documentId,
             metadata=metadata,
-            ttlSeconds=self.ttlSeconds,
+            ttl_seconds=self.ttlSeconds,
         )
 
     def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
@@ -830,10 +830,9 @@ class CassandraSemanticCache(BaseCache):
         promptEmbedding: List[float] = self._get_embedding(text=prompt)
         hits = vectorTable.search(
             embedding_vector=promptEmbedding,
-            topK=1,
-            maxRowsToRetrieve=self.num_rows_to_fetch,
+            top_k=1,
             metric=self.distance_metric,
-            metricThreshold=self.score_threshold,
+            metric_threshold=self.score_threshold,
         )
         if hits:
             hit = hits[0]
