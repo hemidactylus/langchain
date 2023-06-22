@@ -128,17 +128,21 @@ class Cassandra(VectorStore):
         ttl_seconds = kwargs.get("ttl_seconds", self.ttl_seconds)
         #
         embedding_vectors = self.embedding.embed_documents(_texts)
-        for text, embedding_vector, text_id, metadata in zip(
-            _texts, embedding_vectors, ids, metadatas
-        ):
-            self.table.put(
+        #
+        futures = [
+            self.table.put_async(
                 document=text,
                 embedding_vector=embedding_vector,
                 document_id=text_id,
                 metadata=metadata,
                 ttl_seconds=ttl_seconds,
             )
-        #
+            for text, embedding_vector, text_id, metadata in zip(
+                _texts, embedding_vectors, ids, metadatas
+            )
+        ]
+        for future in futures:
+            future.result()
         return ids
 
     # id-returning search facilities
