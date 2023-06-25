@@ -4,9 +4,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from functools import lru_cache
 from abc import ABC, abstractmethod
 from datetime import timedelta
+from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -32,22 +32,26 @@ except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
 from langchain.embeddings.base import Embeddings
+from langchain.llms.base import LLM, get_prompts
 from langchain.schema import Generation
 from langchain.vectorstores.redis import Redis as RedisVectorstore
-from langchain.llms.base import LLM, get_prompts
+
 if TYPE_CHECKING:
     import momento
+    from cassio.vector import VectorTable
+
 
 RETURN_VAL_TYPE = List[Generation]
 
-CASSANDRA_CACHE_DEFAULT_TABLE_NAME = 'langchain_response_cache'
+CASSANDRA_CACHE_DEFAULT_TABLE_NAME = "langchain_response_cache"
 CASSANDRA_CACHE_DEFAULT_TTL_SECONDS = None
 #
 CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH = 8
 CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE = 16
 CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD = 0.85
-CASSANDRA_SEMANTIC_CACHE_TABLE_NAME_PREFIX = 'semantic_cache_'
+CASSANDRA_SEMANTIC_CACHE_TABLE_NAME_PREFIX = "semantic_cache_"
 CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS = None
+
 
 def _hash(_input: str) -> str:
     """Use a deterministic hashing approach."""
@@ -642,9 +646,13 @@ class CassandraCache(BaseCache):
             (now: no. It can be done, not sure if 'natural')
     """
 
-    def __init__(self, session: Session, keyspace: str,
-                 tableName: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
-                 ttl_seconds: int | None = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS):
+    def __init__(
+        self,
+        session: Session,
+        keyspace: str,
+        tableName: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
+        ttl_seconds: int | None = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS,
+    ):
         """Initialize with a ready session and a keyspace name."""
         try:
             from cassio.keyvalue import KVCache
@@ -655,13 +663,14 @@ class CassandraCache(BaseCache):
             )
 
         self.ttlSeconds = ttl_seconds
-        self.kvCache = KVCache(session, keyspace, tableName, keys=['llm_string', 'prompt'])
-
+        self.kvCache = KVCache(
+            session, keyspace, tableName, keys=["llm_string", "prompt"]
+        )
 
     def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
         """Look up based on prompt and llm_string."""
         foundBlob = self.kvCache.get(
-            {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
+            {"llm_string": _hash(llm_string), "prompt": _hash(prompt)},
         )
         if foundBlob:
             return _load_generations_from_json(foundBlob)
@@ -672,18 +681,20 @@ class CassandraCache(BaseCache):
         """Update cache based on prompt and llm_string."""
         blobToStore = _dump_generations_to_json(return_val)
         self.kvCache.put(
-            {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
+            {"llm_string": _hash(llm_string), "prompt": _hash(prompt)},
             blobToStore,
             self.ttlSeconds,
         )
 
-    def delete_through_llm(self, prompt: str, llm: LLM, stop: Optional[List[str]] = None) -> None:
+    def delete_through_llm(
+        self, prompt: str, llm: LLM, stop: Optional[List[str]] = None
+    ) -> None:
         """
         A wrapper around `delete` with the LLM being passed.
         In case the llm(prompt) calls have a `stop` param, you should pass it here
         """
         llm_string = get_prompts(
-            {**llm.dict(), **{'stop': stop}},
+            {**llm.dict(), **{"stop": stop}},
             [],
         )[1]
         return self.delete(prompt, llm_string=llm_string)
@@ -691,7 +702,7 @@ class CassandraCache(BaseCache):
     def delete(self, prompt: str, llm_string: str) -> None:
         """Evict from cache if there's an entry."""
         return self.kvCache.delete(
-            {'llm_string': _hash(llm_string), 'prompt': _hash(prompt)},
+            {"llm_string": _hash(llm_string), "prompt": _hash(prompt)},
         )
 
     def clear(self, **kwargs: Any) -> None:
@@ -706,13 +717,15 @@ class CassandraSemanticCache(BaseCache):
     """
 
     def __init__(
-        self, session: Session, keyspace: str,
+        self,
+        session: Session,
+        keyspace: str,
         embedding: Embeddings,
-        distance_metric: str = 'dot',
+        distance_metric: str = "dot",
         score_threshold: float = CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD,
         num_rows_to_fetch: int = CASSANDRA_SEMANTIC_CACHE_DEFAULT_NUM_ROWS_TO_FETCH,
         table_name_prefix: str = CASSANDRA_SEMANTIC_CACHE_TABLE_NAME_PREFIX,
-        ttl_seconds: int | None = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS
+        ttl_seconds: int | None = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS,
     ):
         """Initialize the cache with all relevant parameters.
         Args:
@@ -734,31 +747,31 @@ class CassandraSemanticCache(BaseCache):
         self.ttlSeconds = ttl_seconds
         # A single instance of these can handle a number of 'llm_strings'.
         # We map each to a separate table. These are cached here:
-        self.table_cache = {}  # model_str -> table_name
+        self.table_cache: Dict[
+            str, VectorTable
+        ] = {}  # model_str -> vector table object
+
         # The contract for this class has separate lookup and update:
         # in order to spare some embedding calculations we cache them between
         # the two calls.
         # Note: each instance of this class has its own `_get_embedding` with
         # its own lru.
         @lru_cache(maxsize=CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE)
-        def _cache_embedding(text):
+        def _cache_embedding(text: str) -> List[float]:
             return self.embedding.embed_query(text=text)
-        self._get_embedding = _cache_embedding
-        self._embedding_dimension = None
 
-    def _getEmbeddingDimension(self):
-        if self._embedding_dimension is None:
-            self._embedding_dimension = len(self._get_embedding(
-                text="This is a sample sentence."
-            ))
-        return self._embedding_dimension
+        self._get_embedding = _cache_embedding
+        self._embedding_dimension = self._getEmbeddingDimension()
+
+    def _getEmbeddingDimension(self) -> int:
+        return len(self._get_embedding(text="This is a sample sentence."))
 
     def clear(self, **kwargs: Any) -> None:
         """Clear semantic cache for a given llm_string."""
-        if 'llm_string' not in kwargs:
-            raise ValueError('llm_string parameter must be passed to clear()')
+        if "llm_string" not in kwargs:
+            raise ValueError("llm_string parameter must be passed to clear()")
         else:
-            vectorTable = self._getVectorTable(kwargs['llm_string'])
+            vectorTable = self._getVectorTable(kwargs["llm_string"])
             vectorTable.clear()
 
     def clear_through_llm(self, llm: LLM, stop: Optional[List[str]] = None) -> None:
@@ -767,12 +780,12 @@ class CassandraSemanticCache(BaseCache):
         In case the llm(prompt) calls have a `stop` param, you should pass it here
         """
         llm_string = get_prompts(
-            {**llm.dict(), **{'stop': stop}},
+            {**llm.dict(), **{"stop": stop}},
             [],
         )[1]
         self.clear(llm_string=llm_string)
 
-    def _getVectorTable(self, llm_string):
+    def _getVectorTable(self, llm_string: str) -> VectorTable:
         if llm_string not in self.table_cache:
             try:
                 from cassio.vector import VectorTable
@@ -782,13 +795,13 @@ class CassandraSemanticCache(BaseCache):
                     "Please install it with `pip install cassio`."
                 )
             #
-            tableName = f'{self.table_name_prefix}{_hash(llm_string)}'
+            tableName = f"{self.table_name_prefix}{_hash(llm_string)}"
             #
             self.table_cache[llm_string] = VectorTable(
                 session=self.session,
                 keyspace=self.keyspace,
                 table=tableName,
-                embedding_dimension=self._getEmbeddingDimension(),
+                embedding_dimension=self._embedding_dimension,
                 auto_id=False,
             )
         #
@@ -800,7 +813,7 @@ class CassandraSemanticCache(BaseCache):
         #
         embedding_vector = self._get_embedding(text=prompt)
         metadata = {
-            'generations_str': _dump_generations_to_json(return_val),
+            "generations_str": _dump_generations_to_json(return_val),
         }
         documentId = _hash(prompt)
         #
@@ -820,7 +833,9 @@ class CassandraSemanticCache(BaseCache):
         else:
             return None
 
-    def lookup_with_id(self, prompt: str, llm_string: str) -> Optional[Tuple[str, RETURN_VAL_TYPE]]:
+    def lookup_with_id(
+        self, prompt: str, llm_string: str
+    ) -> Optional[Tuple[str, RETURN_VAL_TYPE]]:
         """
         Look up based on prompt and llm_string.
         If there are hits, return (document_id, cached_entry)
@@ -836,23 +851,22 @@ class CassandraSemanticCache(BaseCache):
         )
         if hits:
             hit = hits[0]
-            metadata = hit['metadata']
+            metadata = hit["metadata"]
             return (
-                hit['document_id'],
-                _load_generations_from_json(metadata['generations_str']),
+                hit["document_id"],
+                _load_generations_from_json(metadata["generations_str"]),
             )
         else:
             return None
 
     def lookup_with_id_through_llm(
-        self, prompt: str, llm: LLM,
-        stop: Optional[List[str]] = None
+        self, prompt: str, llm: LLM, stop: Optional[List[str]] = None
     ) -> Optional[Tuple[str, RETURN_VAL_TYPE]]:
         llm_string = get_prompts(
-            {**llm.dict(), **{'stop': stop}},
+            {**llm.dict(), **{"stop": stop}},
             [],
         )[1]
-        return self.lookup_with_id(prompt, llm_string=llm_string)        
+        return self.lookup_with_id(prompt, llm_string=llm_string)
 
     def delete_by_document_id(self, document_id: str, llm_string: str) -> None:
         """
@@ -863,9 +877,11 @@ class CassandraSemanticCache(BaseCache):
         vectorTable = self._getVectorTable(llm_string)
         vectorTable.delete(document_id)
 
-    def delete_by_document_id_through_llm(self, document_id: str, llm: LLM, stop: Optional[List[str]] = None) -> None:
+    def delete_by_document_id_through_llm(
+        self, document_id: str, llm: LLM, stop: Optional[List[str]] = None
+    ) -> None:
         llm_string = get_prompts(
-            {**llm.dict(), **{'stop': stop}},
+            {**llm.dict(), **{"stop": stop}},
             [],
         )[1]
-        return self.delete_by_document_id(document_id, llm_string=llm_string)        
+        return self.delete_by_document_id(document_id, llm_string=llm_string)

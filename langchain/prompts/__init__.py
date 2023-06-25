@@ -9,30 +9,42 @@ from langchain.prompts.chat import (
     MessagesPlaceholder,
     SystemMessagePromptTemplate,
 )
-from langchain.prompts.few_shot import FewShotPromptTemplate
-from langchain.prompts.few_shot_with_templates import FewShotPromptWithTemplates
-from langchain.prompts.loading import load_prompt
-from langchain.prompts.prompt import Prompt, PromptTemplate
 from langchain.prompts.database.cassandra import createCassandraPromptTemplate
 from langchain.prompts.database.feast import createFeastPromptTemplate
 from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
+from langchain.prompts.example_selector import (
+    LengthBasedExampleSelector,
+    MaxMarginalRelevanceExampleSelector,
+    NGramOverlapExampleSelector,
+    SemanticSimilarityExampleSelector,
+)
+from langchain.prompts.few_shot import FewShotPromptTemplate
+from langchain.prompts.few_shot_with_templates import FewShotPromptWithTemplates
+from langchain.prompts.loading import load_prompt
+from langchain.prompts.pipeline import PipelinePromptTemplate
+from langchain.prompts.prompt import Prompt, PromptTemplate
 
 __all__ = [
-    "BasePromptTemplate",
-    "StringPromptTemplate",
-    "load_prompt",
-    "PromptTemplate",
-    "FewShotPromptTemplate",
-    "Prompt",
-    "FewShotPromptWithTemplates",
-    "ChatPromptTemplate",
-    "MessagesPlaceholder",
-    "HumanMessagePromptTemplate",
     "AIMessagePromptTemplate",
-    "SystemMessagePromptTemplate",
-    "ChatMessagePromptTemplate",
     "BaseChatPromptTemplate",
-    "DependencyfulPromptTemplate",
+    "BasePromptTemplate",
+    "ChatMessagePromptTemplate",
+    "ChatPromptTemplate",
     "createCassandraPromptTemplate",
     "createFeastPromptTemplate",
+    "DependencyfulPromptTemplate",
+    "FewShotPromptTemplate",
+    "FewShotPromptWithTemplates",
+    "HumanMessagePromptTemplate",
+    "LengthBasedExampleSelector",
+    "MaxMarginalRelevanceExampleSelector",
+    "MessagesPlaceholder",
+    "NGramOverlapExampleSelector",
+    "PipelinePromptTemplate",
+    "Prompt",
+    "PromptTemplate",
+    "SemanticSimilarityExampleSelector",
+    "StringPromptTemplate",
+    "SystemMessagePromptTemplate",
+    "load_prompt",
 ]
