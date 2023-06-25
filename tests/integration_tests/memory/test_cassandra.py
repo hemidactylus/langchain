@@ -1,26 +1,52 @@
 import json
 import os
 
+from cassandra.cluster import Cluster
+
 from langchain.memory import ConversationBufferMemory
 from langchain.memory.chat_message_histories.cassandra import (
     CassandraChatMessageHistory,
 )
 from langchain.schema import _message_to_dict
 
-# Replace these with your cassandra contact points
-contact_points = (
-    os.environ["CONTACT_POINTS"].split(",")
-    if "CONTACT_POINTS" in os.environ
-    else ["cassandra"]
-)
+
+def _chat_message_history(
+    session_id: str = "test-session",
+    drop: bool = True,
+) -> CassandraChatMessageHistory:
+    keyspace = "cmh_test_keyspace"
+    table_name = "cmh_test_table"
+    # get db connection
+    if "CASSANDRA_CONTACT_POINTS" in os.environ:
+        contact_points = os.environ["CONTACT_POINTS"].split(",")
+        cluster = Cluster(contact_points)
+    else:
+        cluster = Cluster()
+    #
+    session = cluster.connect()
+    # ensure keyspace exists
+    session.execute(
+        (
+            f"CREATE KEYSPACE IF NOT EXISTS {keyspace} "
+            f"WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+        )
+    )
+    # drop table if required
+    if drop:
+        session.execute(f"DROP TABLE IF EXISTS {keyspace}.{table_name}")
+    #
+    return CassandraChatMessageHistory(
+        session_id=session_id,
+        session=session,
+        keyspace=keyspace,
+        table_name=table_name,
+    )
 
 
 def test_memory_with_message_store() -> None:
     """Test the memory with a message store."""
     # setup cassandra as a message store
-    message_history = CassandraChatMessageHistory(
-        contact_points=contact_points, session_id="test-session"
-    )
+    message_history = _chat_message_history()
     memory = ConversationBufferMemory(
         memory_key="baz", chat_memory=message_history, return_messages=True
     )
