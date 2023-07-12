@@ -5,7 +5,7 @@ content into variables in a prompt.
 from __future__ import annotations
 
 import typing
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 if typing.TYPE_CHECKING:
     from cassandra.cluster import Session
@@ -15,7 +15,7 @@ from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 # Since subclassing for thins one is a mess, with pydantic and so many changed parameters,
 # we opt for a factory function
 
-FieldMapperType = Dict[str, Tuple[str, str | Callable[[Any], Any]]]
+FieldMapperType = Dict[str, Tuple[str, Union[str, Callable[[Any], Any]]]]
 
 
 def createCassandraPromptTemplate(
