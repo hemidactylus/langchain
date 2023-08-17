@@ -33,6 +33,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Optional,
     Sequence,
     Tuple,
@@ -53,6 +54,7 @@ except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
 from langchain.embeddings.base import Embeddings
+from langchain.llms.base import LLM, get_prompts
 from langchain.load.dump import dumps
 from langchain.load.load import loads
 from langchain.schema import ChatGeneration, Generation
@@ -62,6 +64,7 @@ logger = logging.getLogger(__file__)
 
 if TYPE_CHECKING:
     import momento
+    from cassandra.cluster import Session as CassandraSession
 
 RETURN_VAL_TYPE = Sequence[Generation]
 
@@ -718,3 +721,89 @@ class MomentoCache(BaseCache):
             pass
         elif isinstance(flush_response, CacheFlush.Error):
             raise flush_response.inner_exception
+
+
+CASSANDRA_CACHE_DEFAULT_TABLE_NAME = "langchain_llm_cache"
+CASSANDRA_CACHE_DEFAULT_TTL_SECONDS = None
+
+
+class CassandraCache(BaseCache):
+    """
+    Cache that uses Cassandra / Astra DB as a backend.
+
+    It uses a single Cassandra table.
+    The lookup keys (which get to form the primary key) are:
+        - prompt, a string
+        - llm_string, a deterministic str representation of the model parameters.
+          (needed to prevent collisions same-prompt-different-model collisions)
+    """
+
+    def __init__(
+        self,
+        session: CassandraSession,
+        keyspace: str,
+        table: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
+        ttl_seconds: Optional[int] = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS,
+    ):
+        """Initialize with a ready session and a keyspace name."""
+        try:
+            from cassio.table import ElasticCassandraTable
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
+
+        self.ttl_seconds = ttl_seconds
+        self.kv_cache = ElasticCassandraTable(
+            session=session,
+            keyspace=keyspace,
+            table=table,
+            keys=["llm_string", "prompt"],
+            primary_key_type=["TEXT", "TEXT"],
+            ttl_seconds=ttl_seconds,
+        )
+
+    def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
+        """Look up based on prompt and llm_string."""
+        item = self.kv_cache.get(
+            llm_string=_hash(llm_string),
+            prompt=_hash(prompt),
+        )
+        if item:
+            return _load_generations_from_json(item["body_blob"])
+        else:
+            return None
+
+    def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
+        """Update cache based on prompt and llm_string."""
+        blob = _dump_generations_to_json(return_val)
+        self.kv_cache.put(
+            llm_string=_hash(llm_string),
+            prompt=_hash(prompt),
+            body_blob=blob,
+        )
+
+    def delete_through_llm(
+        self, prompt: str, llm: LLM, stop: Optional[List[str]] = None
+    ) -> None:
+        """
+        A wrapper around `delete` with the LLM being passed.
+        In case the llm(prompt) calls have a `stop` param, you should pass it here
+        """
+        llm_string = get_prompts(
+            {**llm.dict(), **{"stop": stop}},
+            [],
+        )[1]
+        return self.delete(prompt, llm_string=llm_string)
+
+    def delete(self, prompt: str, llm_string: str) -> None:
+        """Evict from cache if there's an entry."""
+        return self.kv_cache.delete(
+            llm_string=_hash(llm_string),
+            prompt=_hash(prompt),
+        )
+
+    def clear(self, **kwargs: Any) -> None:
+        """Clear cache. This is for all LLMs at once."""
+        self.kv_cache.clear()
