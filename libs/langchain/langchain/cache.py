@@ -28,6 +28,7 @@ import logging
 import warnings
 from abc import ABC, abstractmethod
 from datetime import timedelta
+from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -807,3 +808,215 @@ class CassandraCache(BaseCache):
     def clear(self, **kwargs: Any) -> None:
         """Clear cache. This is for all LLMs at once."""
         self.kv_cache.clear()
+
+
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_DISTANCE_METRIC = "dot"
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD = 0.85
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_TABLE_NAME = "langchain_llm_semantic_cache"
+CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS = None
+CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE = 16
+
+
+class CassandraSemanticCache(BaseCache):
+    """
+    Cache that uses Cassandra as a vector-store backend for semantic
+    (i.e. similarity-based) lookup.
+
+    It uses a single (vector) Cassandra table and stores, in principle,
+    cached values from several LLMs, so the LLM's llm_string is part
+    of the rows' primary keys.
+
+    The similarity is based on one of several distance metrics (default: "dot").
+    If choosing another metric, the default threshold is to be re-tuned accordingly.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        keyspace: str,
+        embedding: Embeddings,
+        table: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TABLE_NAME,
+        distance_metric: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_DISTANCE_METRIC,
+        score_threshold: float = CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD,
+        ttl_seconds: Optional[int] = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS,
+        #
+        table_name_prefix: Optional[str] = None,
+        num_rows_to_fetch: Optional[int] = None,
+    ):
+        """Initialize the cache with all relevant parameters.
+        Args:
+            session (cassandra.cluster.Session): an open Cassandra session
+            keyspace (str): the keyspace to use for storing the cache
+            embedding (Embedding): Embedding provider for semantic
+                encoding and search.
+            table (str): name of the Cassandra (vector) table
+                to use as cache
+            distance_metric (str, 'dot'): which measure to adopt for
+                similarity searches
+            score_threshold (optional float): numeric value to use as
+                cutoff for the similarity searches
+            ttl_seconds (optional int): time-to-live for cache entries
+                (default: None, i.e. forever)
+            table_name_prefix (str): a *legacy parameter* for backward-compat,
+                will take precedence over `table` if provided.
+                Do not pass if you're writing new code, use `table`.
+            num_rows_to_fetch (int): a *legacy parameter* for backward-compat,
+                currently discarded with a warning. Do not use.
+        The default score threshold is tuned to the default metric.
+        Tune it carefully yourself if switching to another distance metric.
+        """
+        try:
+            from cassio.table import MetadataVectorCassandraTable
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
+        #
+        if num_rows_to_fetch is not None:
+            warnings.warn(
+                "Argument `num_rows_to_fetch` to `CassandraSemanticCache` is deprecated and will be ignored. Please remove it from your code.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        #
+        if table_name_prefix:
+            warnings.warn(
+                "Argument `table_name_prefix` to `CassandraSemanticCache` is deprecated. Please update your code to specify `table`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if table_name_prefix[-1] == "_":
+                _table = table_name_prefix[:-1]
+            else:
+                _table = table_name_prefix
+        else:
+            _table = table
+        #
+        self.table = _table
+        self.session = session
+        self.keyspace = keyspace
+        self.embedding = embedding
+        self.distance_metric = distance_metric
+        self.score_threshold = score_threshold
+        self.ttl_seconds = ttl_seconds
+        # The contract for this class has separate lookup and update:
+        # in order to spare some embedding calculations we cache them between
+        # the two calls.
+        # Note: each instance of this class has its own `_get_embedding` with
+        # its own lru.
+        @lru_cache(maxsize=CASSANDRA_SEMANTIC_CACHE_EMBEDDING_CACHE_SIZE)
+        def _cache_embedding(text: str) -> List[float]:
+            return self.embedding.embed_query(text=text)
+
+        self._get_embedding = _cache_embedding
+        #
+        self.embedding_dimension = self._get_embedding_dimension()
+        #
+        self.table = MetadataVectorCassandraTable(
+            session=self.session,
+            keyspace=self.keyspace,
+            table=self.table,
+            primary_key_type=["TEXT"],
+            vector_dimension=self.embedding_dimension,
+            ttl_seconds=self.ttl_seconds,
+            metadata_indexing=("allow", {"_llm_string_hash"}),
+        )
+
+    def _get_embedding_dimension(self) -> int:
+        return len(self._get_embedding(text="This is a sample sentence."))
+
+    def clear(self, **kwargs: Any) -> None:
+        """Clear the *whole* semantic cache."""
+        if "llm_string" in kwargs:
+            warnings.warn(
+                "Argument `llm_string` to `clear()` has been removed and will be ignored.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self.table.clear()
+
+    def clear_through_llm(self, llm: LLM, stop: Optional[List[str]] = None) -> None:
+        warnings.warn(
+            "Method `clear_through_llm` has been removed in the final implementation. Please either use `clear` or remove the invocation altogether. This call is a no-op.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
+        """Update cache based on prompt and llm_string."""
+        embedding_vector = self._get_embedding(text=prompt)
+        llm_string_hash = _hash(llm_string)
+        body = _dump_generations_to_json(return_val)
+        metadata = {
+            "_prompt": prompt,
+            "_llm_string_hash": llm_string_hash,
+        }
+        row_id = f"{_hash(prompt)}-{llm_string_hash}"
+        #
+        self.table.put(
+            body_blob=body,
+            vector=embedding_vector,
+            row_id=row_id,
+            metadata=metadata,
+        )
+
+    def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
+        """Look up based on prompt and llm_string."""
+        hit_with_id = self.lookup_with_id(prompt, llm_string)
+        if hit_with_id is not None:
+            return hit_with_id[1]
+        else:
+            return None
+
+    def lookup_with_id(
+        self, prompt: str, llm_string: str
+    ) -> Optional[Tuple[str, RETURN_VAL_TYPE]]:
+        """
+        Look up based on prompt and llm_string.
+        If there are hits, return (document_id, cached_entry)
+        """
+        prompt_embedding: List[float] = self._get_embedding(text=prompt)
+        hits = list(self.table.metric_ann_search(
+            vector=prompt_embedding,
+            metadata={"_llm_string_hash": _hash(llm_string)},
+            n=1,
+            metric=self.distance_metric,
+            metric_threshold=self.score_threshold,
+        ))
+        if hits:
+            hit = hits[0]
+            generations_str = hit["body_blob"]
+            return (
+                hit["row_id"],
+                _load_generations_from_json(generations_str),
+            )
+        else:
+            return None
+
+    def lookup_with_id_through_llm(
+        self, prompt: str, llm: LLM, stop: Optional[List[str]] = None
+    ) -> Optional[Tuple[str, RETURN_VAL_TYPE]]:
+        llm_string = get_prompts(
+            {**llm.dict(), **{"stop": stop}},
+            [],
+        )[1]
+        return self.lookup_with_id(prompt, llm_string=llm_string)
+
+    def delete_by_document_id(self, document_id: str) -> None:
+        """
+        Given this is a "similarity search" cache, an invalidation pattern
+        that makes sense is first a lookup to get an ID, and then deleting
+        with that ID. This is for the second step.
+        """
+        self.table.delete(row_id=document_id)
+
+    def delete_by_document_id_through_llm(
+        self, document_id: str, llm: LLM, stop: Optional[List[str]] = None
+    ) -> None:
+        warnings.warn(
+            "Method `delete_by_document_id_through_llm` is deprecated and will fall back to `delete_by_document_id`.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.delete_by_document_id(document_id)
