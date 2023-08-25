@@ -743,10 +743,18 @@ class CassandraCache(BaseCache):
         self,
         session: CassandraSession,
         keyspace: str,
-        table: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
+        table_name: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
         ttl_seconds: Optional[int] = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS,
     ):
-        """Initialize with a ready session and a keyspace name."""
+        """
+        Initialize with a ready session and a keyspace name.
+        Args:
+            session (cassandra.cluster.Session): an open Cassandra session
+            keyspace (str): the keyspace to use for storing the cache
+            table_name (str): name of the Cassandra table to use as cache
+            ttl_seconds (optional int): time-to-live for cache entries
+                (default: None, i.e. forever)
+        """
         try:
             from cassio.table import ElasticCassandraTable
         except (ImportError, ModuleNotFoundError):
@@ -755,14 +763,18 @@ class CassandraCache(BaseCache):
                 "Please install it with `pip install cassio`."
             )
 
+        self.session = session
+        self.keyspace = keyspace
+        self.table_name = table_name
         self.ttl_seconds = ttl_seconds
+
         self.kv_cache = ElasticCassandraTable(
-            session=session,
-            keyspace=keyspace,
-            table=table,
+            session=self.session,
+            keyspace=self.keyspace,
+            table=self.table_name,
             keys=["llm_string", "prompt"],
             primary_key_type=["TEXT", "TEXT"],
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=self.ttl_seconds,
         )
 
     def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
@@ -835,21 +847,19 @@ class CassandraSemanticCache(BaseCache):
         session: Session,
         keyspace: str,
         embedding: Embeddings,
-        table: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TABLE_NAME,
+        table_name: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TABLE_NAME,
         distance_metric: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_DISTANCE_METRIC,
         score_threshold: float = CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD,
         ttl_seconds: Optional[int] = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS,
-        #
-        table_name_prefix: Optional[str] = None,
-        num_rows_to_fetch: Optional[int] = None,
     ):
-        """Initialize the cache with all relevant parameters.
+        """
+        Initialize the cache with all relevant parameters.
         Args:
             session (cassandra.cluster.Session): an open Cassandra session
             keyspace (str): the keyspace to use for storing the cache
             embedding (Embedding): Embedding provider for semantic
                 encoding and search.
-            table (str): name of the Cassandra (vector) table
+            table_name (str): name of the Cassandra (vector) table
                 to use as cache
             distance_metric (str, 'dot'): which measure to adopt for
                 similarity searches
@@ -857,11 +867,6 @@ class CassandraSemanticCache(BaseCache):
                 cutoff for the similarity searches
             ttl_seconds (optional int): time-to-live for cache entries
                 (default: None, i.e. forever)
-            table_name_prefix (str): a *legacy parameter* for backward-compat,
-                will take precedence over `table` if provided.
-                Do not pass if you're writing new code, use `table`.
-            num_rows_to_fetch (int): a *legacy parameter* for backward-compat,
-                currently discarded with a warning. Do not use.
         The default score threshold is tuned to the default metric.
         Tune it carefully yourself if switching to another distance metric.
         """
@@ -872,34 +877,14 @@ class CassandraSemanticCache(BaseCache):
                 "Could not import cassio python package. "
                 "Please install it with `pip install cassio`."
             )
-        #
-        if num_rows_to_fetch is not None:
-            warnings.warn(
-                "Argument `num_rows_to_fetch` to `CassandraSemanticCache` is deprecated and will be ignored. Please remove it from your code.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        #
-        if table_name_prefix:
-            warnings.warn(
-                "Argument `table_name_prefix` to `CassandraSemanticCache` is deprecated. Please update your code to specify `table`.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if table_name_prefix[-1] == "_":
-                _table = table_name_prefix[:-1]
-            else:
-                _table = table_name_prefix
-        else:
-            _table = table
-        #
-        self.table = _table
         self.session = session
         self.keyspace = keyspace
         self.embedding = embedding
+        self.table_name = table_name
         self.distance_metric = distance_metric
         self.score_threshold = score_threshold
         self.ttl_seconds = ttl_seconds
+
         # The contract for this class has separate lookup and update:
         # in order to spare some embedding calculations we cache them between
         # the two calls.
@@ -910,13 +895,12 @@ class CassandraSemanticCache(BaseCache):
             return self.embedding.embed_query(text=text)
 
         self._get_embedding = _cache_embedding
-        #
         self.embedding_dimension = self._get_embedding_dimension()
-        #
+
         self.table = MetadataVectorCassandraTable(
             session=self.session,
             keyspace=self.keyspace,
-            table=self.table,
+            table=self.table_name,
             primary_key_type=["TEXT"],
             vector_dimension=self.embedding_dimension,
             ttl_seconds=self.ttl_seconds,
@@ -928,20 +912,7 @@ class CassandraSemanticCache(BaseCache):
 
     def clear(self, **kwargs: Any) -> None:
         """Clear the *whole* semantic cache."""
-        if "llm_string" in kwargs:
-            warnings.warn(
-                "Argument `llm_string` to `clear()` has been removed and will be ignored.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         self.table.clear()
-
-    def clear_through_llm(self, llm: LLM, stop: Optional[List[str]] = None) -> None:
-        warnings.warn(
-            "Method `clear_through_llm` has been removed in the final implementation. Please either use `clear` or remove the invocation altogether. This call is a no-op.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
     def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
         """Update cache based on prompt and llm_string."""
@@ -1010,13 +981,3 @@ class CassandraSemanticCache(BaseCache):
         with that ID. This is for the second step.
         """
         self.table.delete(row_id=document_id)
-
-    def delete_by_document_id_through_llm(
-        self, document_id: str, llm: LLM, stop: Optional[List[str]] = None
-    ) -> None:
-        warnings.warn(
-            "Method `delete_by_document_id_through_llm` is deprecated and will fall back to `delete_by_document_id`.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.delete_by_document_id(document_id)
