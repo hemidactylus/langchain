@@ -5,8 +5,7 @@ content into variables in a prompt.
 from __future__ import annotations
 
 import typing
-from functools import reduce
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 
@@ -46,9 +45,7 @@ def createFeastPromptTemplate(
     field_mapper: FieldMapperType,
 ) -> DependencyfulPromptTemplate:
     try:
-        from feast.entity import Entity
-        from feast.feature_store import FeatureStore
-        from feast.feature_view import FeatureView
+        pass
     except (ImportError, ModuleNotFoundError):
         raise ValueError(
             "Could not import feast python package. "

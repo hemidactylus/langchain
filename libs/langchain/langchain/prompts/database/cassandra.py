@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import typing
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
-from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
-from langchain.pydantic_v1 import root_validator
-
+from typing import Any, Callable, Dict, Tuple, Union
 
 # if typing.TYPE_CHECKING:
 from cassandra.cluster import Session
+
+from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
+from langchain.pydantic_v1 import root_validator
 
 FieldMapperType = Dict[str, Tuple[str, Union[str, Callable[[Any], Any]]]]
 
@@ -16,7 +14,6 @@ DEFAULT_ADMIT_NULLS = True
 
 
 class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
-
     session: Session
 
     keyspace: str
@@ -27,7 +24,6 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
 
     @root_validator(pre=True)
     def check_and_provide_convertor(cls, values: Dict) -> Dict:
-        print("VALIDATING IN CRPT")
         convertor_info = cls._prepare_reader_info(
             values["session"],
             values["keyspace"],
@@ -39,7 +35,12 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
         return values
 
     @staticmethod
-    def _prepare_reader_info(session: Session, keyspace: str, field_mapper: FieldMapperType, admit_nulls: bool):
+    def _prepare_reader_info(
+        session: Session,
+        keyspace: str,
+        field_mapper: FieldMapperType,
+        admit_nulls: bool,
+    ):
         try:
             from cassio.db_extractor import CassandraExtractor
         except (ImportError, ModuleNotFoundError):
@@ -57,7 +58,9 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
 
         return {
             "convertor": lambda kws: _conv(**kws),
-            "convertor_output_variables": list(field_mapper.keys()),  # TODO: infer these
+            "convertor_output_variables": list(
+                field_mapper.keys()
+            ),  # TODO: infer these
             "convertor_input_variables": _conv.requiredParameters,
         }
 
