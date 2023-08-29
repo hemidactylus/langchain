@@ -1,58 +1,66 @@
-"""
-A prompt template that automates retrieving rows from Cassandra and making their
-content into variables in a prompt.
-"""
 from __future__ import annotations
 
 import typing
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-if typing.TYPE_CHECKING:
-    from cassandra.cluster import Session
+from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
+from langchain.pydantic_v1 import root_validator
 
-from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 
-# Since subclassing for thins one is a mess, with pydantic and so many changed parameters,
-# we opt for a factory function
+# if typing.TYPE_CHECKING:
+from cassandra.cluster import Session
 
 FieldMapperType = Dict[str, Tuple[str, Union[str, Callable[[Any], Any]]]]
 
+DEFAULT_ADMIT_NULLS = True
 
-def createCassandraPromptTemplate(
-    session: Session,
-    keyspace: str,
-    template: str,
-    input_variables: List[str],
-    field_mapper: FieldMapperType,
-    literal_nones: bool = False,
-) -> DependencyfulPromptTemplate:
-    try:
-        from cassio.db_extractor import CassandraExtractor
-    except (ImportError, ModuleNotFoundError):
-        raise ValueError(
-            "Could not import cassio python package. "
-            "Please install it with `pip install cassio`."
+
+class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
+
+    session: Session
+
+    keyspace: str
+
+    field_mapper: FieldMapperType
+
+    admit_nulls: bool = DEFAULT_ADMIT_NULLS
+
+    @root_validator(pre=True)
+    def check_and_provide_convertor(cls, values: Dict) -> Dict:
+        print("VALIDATING IN CRPT")
+        convertor_info = cls._prepare_reader_info(
+            values["session"],
+            values["keyspace"],
+            values["field_mapper"],
+            values.get("admit_nulls", DEFAULT_ADMIT_NULLS),
+        )
+        for k, v in convertor_info.items():
+            values[k] = v
+        return values
+
+    @staticmethod
+    def _prepare_reader_info(session: Session, keyspace: str, field_mapper: FieldMapperType, admit_nulls: bool):
+        try:
+            from cassio.db_extractor import CassandraExtractor
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import cassio python package. "
+                "Please install it with `pip install cassio`."
+            )
+        #
+        _conv = CassandraExtractor(
+            session=session,
+            keyspace=keyspace,
+            field_mapper=field_mapper,
+            literal_nones=admit_nulls,
         )
 
-    # we need a callable that receives a 'dependencies' dict argument and other keyword args = columns in primary keys
-    # and returns the values as in the field_mapper provided dict
-    dataExtractor = CassandraExtractor(session, keyspace, field_mapper, literal_nones)
+        return {
+            "convertor": lambda kws: _conv(**kws),
+            "convertor_output_variables": list(field_mapper.keys()),  # TODO: infer these
+            "convertor_input_variables": _conv.requiredParameters,
+        }
 
-    def _dataGetter(deps: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
-        # we ignore dependencies in this case, knowing it's not required
-        # by the extractor contract
-        return dataExtractor(**kwargs)
-
-    # let's store the extractor in the dependencies.
-    # Should it ever need to be accessed (but no immediate reason to)
-    cptDependencies = {"extractor": dataExtractor}
-
-    cassandraPromptTemplate = DependencyfulPromptTemplate(
-        template=template,
-        dependencies=cptDependencies,
-        getter=_dataGetter,
-        input_variables=input_variables,
-        forceGetterArguments=dataExtractor.requiredParameters,
-    )
-
-    return cassandraPromptTemplate
+    @property
+    def _prompt_type(self) -> str:
+        return "cassandra-reader-prompt-template"

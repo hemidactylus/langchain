@@ -21,22 +21,22 @@ class DependencyfulPromptTemplate(StringPromptTemplate):
     # needed for overriding when e.g. the getter is programmatically built
     forceGetterArguments: List[str] = Field(exclude=True, default=None)
 
-    # @validator("input_variables")
-    # def validate_input_variables(cls, v: dict) -> dict:
-    #     # TODO: 'v' is the value of 'input_variables' at initialization
-    #     # Raise a ValueError('...') if necessary, otherwise:
-    #     return v
+    @validator("input_variables")
+    def validate_input_variables(cls, v: dict) -> dict:
+        # TODO: 'v' is the value of 'input_variables' at initialization
+        # Raise a ValueError('...') if necessary, otherwise:
+        return v
 
-    # @validator("getter")
-    # def validate_getter(cls, v: GetterType) -> GetterType:
-    #     _getterArgs = inspect.getfullargspec(v).args
-    #     if _getterArgs:
-    #         cls.getterArguments = _getterArgs[1:]
-    #         return v
-    #     else:
-    #         raise ValueError(
-    #             "The getter must accept at least one argument (dependency dict)"
-    #         )
+    @validator("getter")
+    def validate_getter(cls, v: GetterType) -> GetterType:
+        _getterArgs = inspect.getfullargspec(v).args
+        if _getterArgs:
+            cls.getterArguments = _getterArgs[1:]
+            return v
+        else:
+            raise ValueError(
+                "The getter must accept at least one argument (dependency dict)"
+            )
 
     def format(self, **kwargs: Any) -> str:
         fullKwargs = {**kwargs, **self.partial_variables}

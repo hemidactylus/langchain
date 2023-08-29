@@ -47,7 +47,6 @@ from langchain.prompts.few_shot import (
     FewShotChatMessagePromptTemplate,
     FewShotPromptTemplate,
 )
-from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
 from langchain.prompts.few_shot_with_templates import FewShotPromptWithTemplates
 from langchain.prompts.loading import load_prompt
 from langchain.prompts.pipeline import PipelinePromptTemplate
@@ -60,7 +59,6 @@ __all__ = [
     "BasePromptTemplate",
     "ChatMessagePromptTemplate",
     "ChatPromptTemplate",
-    "DependencyfulPromptTemplate",
     "FewShotPromptTemplate",
     "FewShotPromptWithTemplates",
     "HumanMessagePromptTemplate",
