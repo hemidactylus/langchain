@@ -1,20 +1,26 @@
+"""
+A prompt template that automates retrieving rows from multiple tables in
+Cassandra and making their content into variables in a prompt.
+"""
 from __future__ import annotations
 
+import typing
 from typing import Any, Callable, Dict, Tuple, Union
 
-# if typing.TYPE_CHECKING:
-from cassandra.cluster import Session
+if typing.TYPE_CHECKING:
+    from cassandra.cluster import Session
 
 from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
 from langchain.pydantic_v1 import root_validator
 
-FieldMapperType = Dict[str, Tuple[str, Union[str, Callable[[Any], Any]]]]
+RowToValueType = Union[str, Callable[[Any], Any]]
+FieldMapperType = Dict[str, Union[Tuple[str, RowToValueType], Tuple[str, RowToValueType, bool], Tuple[str, RowToValueType, bool, Any]]]
 
 DEFAULT_ADMIT_NULLS = True
 
 
 class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
-    session: Session
+    session: Any  # Session
 
     keyspace: str
 
@@ -49,19 +55,17 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
                 "Please install it with `pip install cassio`."
             )
         #
-        _conv = CassandraExtractor(
+        _convertor = CassandraExtractor(
             session=session,
             keyspace=keyspace,
             field_mapper=field_mapper,
-            literal_nones=admit_nulls,
+            admit_nulls=admit_nulls,
         )
 
         return {
-            "convertor": lambda kws: _conv(**kws),
-            "convertor_output_variables": list(
-                field_mapper.keys()
-            ),  # TODO: infer these
-            "convertor_input_variables": _conv.requiredParameters,
+            "convertor": _convertor.dictionary_based_call,
+            "convertor_output_variables": _convertor.output_parameters,
+            "convertor_input_variables": _convertor.input_parameters,
         }
 
     @property

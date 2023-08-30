@@ -7,19 +7,20 @@ from __future__ import annotations
 import typing
 from typing import Any, Dict, List, Tuple
 
-from langchain.prompts.dependencyful_prompt import DependencyfulPromptTemplate
-
 if typing.TYPE_CHECKING:
     from feast.entity import Entity
     from feast.feature_store import FeatureStore
     from feast.feature_view import FeatureView
 
+from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
+from langchain.pydantic_v1 import root_validator
+
 
 FieldMapperType = Dict[str, Tuple[str, str]]
 
 
-def _feast_get_entity_by_name(store: FeatureStore, entityName: str) -> Entity:
-    return [ent for ent in store.list_entities() if ent.name == entityName][0]
+def _feast_get_entity_by_name(store: FeatureStore, entity_name: str) -> Entity:
+    return [ent for ent in store.list_entities() if ent.name == entity_name][0]
 
 
 def _feast_get_entity_join_keys(entity: Entity) -> List[str]:
@@ -31,60 +32,73 @@ def _feast_get_entity_join_keys(entity: Entity) -> List[str]:
 
 
 def _feast_get_feature_view_by_name(
-    store: FeatureStore, featureViewName: str
+    store: FeatureStore, feature_view_name: str
 ) -> FeatureView:
     return [
-        fview for fview in store.list_feature_views() if fview.name == featureViewName
+        fview for fview in store.list_feature_views() if fview.name == feature_view_name
     ][0]
 
 
-def createFeastPromptTemplate(
-    store: FeatureStore,
-    template: str,
-    input_variables: List[str],
-    field_mapper: FieldMapperType,
-) -> DependencyfulPromptTemplate:
-    try:
-        pass
-    except (ImportError, ModuleNotFoundError):
-        raise ValueError(
-            "Could not import feast python package. "
-            'Please install it with `pip install "feast>=0.26"`.'
+class FeastReaderPromptTemplate(ConvertorPromptTemplate):
+    feature_store: Any  # FeatureStore
+
+    field_mapper: FieldMapperType
+
+    @root_validator(pre=True)
+    def check_and_provide_convertor(cls, values: Dict) -> Dict:
+
+        convertor_info = cls._prepare_reader_info(
+            values["feature_store"],
+            values["field_mapper"],
         )
+        for k, v in convertor_info.items():
+            values[k] = v
+        return values
 
-    # inspection of the store allows to reconstruc this:
-    neededFeatureViews = [
-        _feast_get_feature_view_by_name(store, fvName)
-        for fvName in {fview for fview, _ in field_mapper.values()}
-    ]
-    neededEntityNames = {ent for fView in neededFeatureViews for ent in fView.entities}
-    allRequiredJoinKeys = sorted(
-        jk
-        for entName in neededEntityNames
-        for jk in _feast_get_entity_join_keys(_feast_get_entity_by_name(store, entName))
-    )
+    @staticmethod
+    def _prepare_reader_info(
+        feature_store: FeatureStore,
+        field_mapper: FieldMapperType,
+    ):
+        try:
+            from feast.entity import Entity
+            from feast.feature_store import FeatureStore
+            from feast.feature_view import FeatureView
+        except (ImportError, ModuleNotFoundError):
+            raise ValueError(
+                "Could not import feast python package. "
+                'Please install it with `pip install "feast>=0.26"`.'
+            )
+        # inspection of the store to build the getter and the var names:
+        required_f_views = [
+            _feast_get_feature_view_by_name(feature_store, f_view_name)
+            for f_view_name in {fwn for fwn, _ in field_mapper.values()}
+        ]
+        required_entity_names = {ent for f_view in required_f_views for ent in f_view.entities}
+        join_keys = sorted({
+            join_key
+            for entity_name in required_entity_names
+            for join_key in _feast_get_entity_join_keys(_feast_get_entity_by_name(feature_store, entity_name))
+        })
 
-    #
-    def _getter(deps: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
-        _store = deps["store"]
-        #
-        feature_vector = _store.get_online_features(
-            features=[f"{fview}:{fname}" for _, (fview, fname) in field_mapper.items()],
-            entity_rows=[kwargs],
-        ).to_dict()
-        #
-        retrieved_variables = {
-            vname: feature_vector[fname][0]
-            for vname, (_, fname) in field_mapper.items()
+        def _convertor(args_dict: Dict[str, Any]) -> Dict[str, Any]:
+            feature_vector = feature_store.get_online_features(
+                features=[f"{fview}:{fname}" for _, (fview, fname) in field_mapper.items()],
+                entity_rows=[args_dict],
+            ).to_dict()
+            #
+            retrieved_variables = {
+                vname: feature_vector[fname][0]
+                for vname, (_, fname) in field_mapper.items()
+            }
+            return retrieved_variables
+
+        return {
+            "convertor": _convertor,
+            "convertor_output_variables": list(field_mapper.keys()),
+            "convertor_input_variables": join_keys,
         }
-        return retrieved_variables
 
-    feastPromptTemplate = DependencyfulPromptTemplate(
-        template=template,
-        dependencies={"store": store},
-        getter=_getter,
-        input_variables=input_variables,
-        forceGetterArguments=allRequiredJoinKeys,
-    )
-
-    return feastPromptTemplate
+    @property
+    def _prompt_type(self) -> str:
+        return "feast-reader-prompt-template"

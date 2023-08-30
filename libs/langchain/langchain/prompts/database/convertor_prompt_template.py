@@ -11,6 +11,8 @@ from langchain.prompts.base import (
 )
 from langchain.pydantic_v1 import Extra, root_validator
 
+ConvertorType = Callable[[Dict[str, Any]], Dict[str, Any]]
+
 
 class ConvertorPromptTemplate(StringPromptTemplate):
     @property
@@ -28,7 +30,7 @@ class ConvertorPromptTemplate(StringPromptTemplate):
 
     input_variables: List[str]
 
-    convertor: Callable[[Dict[str, Any]], Dict[str, Any]]
+    convertor: ConvertorType
 
     convertor_input_variables: List[str]
 
@@ -42,7 +44,7 @@ class ConvertorPromptTemplate(StringPromptTemplate):
 
     @root_validator(pre=False)
     def check_convertor_and_template(cls, values: Dict) -> Dict:
-        # this is e.g. to ensure partialing knows what to do for ChatPromptTemplate
+        # this is to ensure partialing knows what to do for e.g. ChatPromptTemplate
         values["input_variables"] = list(
             set(values["input_variables"]) | set(values["convertor_input_variables"])
         )
