@@ -14,7 +14,14 @@ from langchain.prompts.database.convertor_prompt_template import ConvertorPrompt
 from langchain.pydantic_v1 import root_validator
 
 RowToValueType = Union[str, Callable[[Any], Any]]
-FieldMapperType = Dict[str, Union[Tuple[str, RowToValueType], Tuple[str, RowToValueType, bool], Tuple[str, RowToValueType, bool, Any]]]
+FieldMapperType = Dict[
+    str,
+    Union[
+        Tuple[str, RowToValueType],
+        Tuple[str, RowToValueType, bool],
+        Tuple[str, RowToValueType, bool, Any],
+    ],
+]
 
 DEFAULT_ADMIT_NULLS = True
 
@@ -46,7 +53,7 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
         keyspace: str,
         field_mapper: FieldMapperType,
         admit_nulls: bool,
-    ):
+    ) -> Dict[str, Any]:
         try:
             from cassio.db_extractor import CassandraExtractor
         except (ImportError, ModuleNotFoundError):

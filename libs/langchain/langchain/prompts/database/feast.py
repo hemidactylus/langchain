@@ -15,8 +15,10 @@ if typing.TYPE_CHECKING:
 from langchain.prompts.database.convertor_prompt_template import ConvertorPromptTemplate
 from langchain.pydantic_v1 import root_validator
 
-
-FieldMapperType = Dict[str, Union[Tuple[str, str], Tuple[str, str, bool], Tuple[str, str, bool, Any]]]
+FeatureRetrievalPrescriptionType = Union[
+    Tuple[str, str], Tuple[str, str, bool], Tuple[str, str, bool, Any]
+]
+FieldMapperType = Dict[str, FeatureRetrievalPrescriptionType]
 
 DEFAULT_ADMIT_NULLS = True
 
@@ -41,9 +43,13 @@ def _feast_get_feature_view_by_name(
     ][0]
 
 
-def _ensure_full_extraction_tuple(tpl, admit_nulls):
+def _ensure_full_extraction_tuple(
+    tpl: Tuple[Any, ...], admit_nulls: bool
+) -> Tuple[Any, ...]:
     if len(tpl) < 2:
-        raise ValueError("At least feature_view and feature_name are required in the field_mapper.")
+        raise ValueError(
+            "At least feature_view and feature_name are required in the field_mapper."
+        )
     elif len(tpl) == 2:
         return tuple(list(tpl) + [admit_nulls, None])
     elif len(tpl) == 3:
@@ -51,7 +57,10 @@ def _ensure_full_extraction_tuple(tpl, admit_nulls):
     elif len(tpl) == 4:
         return tpl
     else:
-        raise ValueError("Cannot specify more than (feature_view, feature_name, admit_nulls, default) in the field_mapper")
+        raise ValueError(
+            "Cannot specify more than (feature_view, feature_name, "
+            "admit_nulls, default) in the field_mapper"
+        )
 
 
 class FeastReaderPromptTemplate(ConvertorPromptTemplate):
@@ -63,7 +72,6 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
 
     @root_validator(pre=True)
     def check_and_provide_convertor(cls, values: Dict) -> Dict:
-
         convertor_info = cls._prepare_reader_info(
             values["feature_store"],
             values["field_mapper"],
@@ -78,11 +86,9 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
         feature_store: FeatureStore,
         field_mapper: FieldMapperType,
         admit_nulls: bool,
-    ):
+    ) -> Dict[str, Any]:
         try:
-            from feast.entity import Entity
-            from feast.feature_store import FeatureStore
-            from feast.feature_view import FeatureView
+            pass
         except (ImportError, ModuleNotFoundError):
             raise ValueError(
                 "Could not import feast python package. "
@@ -99,16 +105,25 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
             _feast_get_feature_view_by_name(feature_store, f_view_name)
             for (f_view_name, _, _, _) in norm_field_mapper.values()
         ]
-        required_entity_names = {ent for f_view in required_f_views for ent in f_view.entities}
-        join_keys = sorted({
-            join_key
-            for entity_name in required_entity_names
-            for join_key in _feast_get_entity_join_keys(_feast_get_entity_by_name(feature_store, entity_name))
-        })
+        required_entity_names = {
+            ent for f_view in required_f_views for ent in f_view.entities
+        }
+        join_keys = sorted(
+            {
+                join_key
+                for entity_name in required_entity_names
+                for join_key in _feast_get_entity_join_keys(
+                    _feast_get_entity_by_name(feature_store, entity_name)
+                )
+            }
+        )
 
         def _convertor(args_dict: Dict[str, Any]) -> Dict[str, Any]:
             feature_vector = feature_store.get_online_features(
-                features=[f"{fview}:{fname}" for _, (fview, fname, _, _) in norm_field_mapper.items()],
+                features=[
+                    f"{fview}:{fname}"
+                    for _, (fview, fname, _, _) in norm_field_mapper.items()
+                ],
                 entity_rows=[args_dict],
             ).to_dict()
             #
@@ -119,7 +134,12 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
                     ok_nulls,
                     default_f_value,
                 )
-                for vname, (fview, fname, ok_nulls, default_f_value) in norm_field_mapper.items()
+                for vname, (
+                    fview,
+                    fname,
+                    ok_nulls,
+                    default_f_value,
+                ) in norm_field_mapper.items()
             }
             #
             return retrieved_variables
@@ -134,7 +154,10 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
     def _prompt_type(self) -> str:
         return "feast-reader-prompt-template"
 
-def _check_for_null_f_val(f_full_name, f_raw_value, ok_nulls, default_f_value):
+
+def _check_for_null_f_val(
+    f_full_name: str, f_raw_value: Any, ok_nulls: bool, default_f_value: Any
+) -> Any:
     if f_raw_value is not None:
         return f_raw_value
     else:
