@@ -68,13 +68,13 @@ class Cassandra(VectorStore):
     def __init__(
         self,
         embedding: Embeddings,
-        session: Session,
-        keyspace: str,
         table_name: str,
+        session: Optional[Session] = None,
+        keyspace: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
     ) -> None:
         try:
-            from cassio.vector import VectorTable
+            from cassio.table import MetadataVectorCassandraTable
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Could not import cassio python package. "
@@ -89,12 +89,13 @@ class Cassandra(VectorStore):
         #
         self._embedding_dimension = None
         #
-        self.table = VectorTable(
+        self.vector_table = MetadataVectorCassandraTable(
             session=session,
             keyspace=keyspace,
             table=table_name,
-            embedding_dimension=self._get_embedding_dimension(),
+            vector_dimension=self._get_embedding_dimension(),
             primary_key_type="TEXT",
+            metadata_indexing="all",
         )
 
     @property
@@ -108,7 +109,7 @@ class Cassandra(VectorStore):
 
     def _select_relevance_score_fn(self) -> Callable[[float], float]:
         """
-        The underlying VectorTable already returns a "score proper",
+        The underlying *CassandraTable already returns a "score proper",
         i.e. one in [0, 1] where higher means more *similar*,
         so here the final score transformation is not reversing the interval:
         """
@@ -123,14 +124,13 @@ class Cassandra(VectorStore):
 
     def clear(self) -> None:
         """Empty the collection."""
-        self.table.clear()
+        self.vector_table.clear()
 
     def delete_by_document_id(self, document_id: str) -> None:
-        return self.table.delete(document_id)
+        return self.vector_table.delete(row_id=document_id)
 
     def delete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
         """Delete by vector IDs.
-
 
         Args:
             ids: List of ids to delete.
@@ -186,8 +186,13 @@ class Cassandra(VectorStore):
             batch_metadatas = metadatas[i : i + batch_size]
 
             futures = [
-                self.table.put_async(
-                    text, embedding_vector, text_id, metadata, ttl_seconds
+                self.vector_table.put_async(
+                    row_id=text_id,
+                    body_blob=text,
+                    vector=embedding_vector,
+                    metadata=metadata or {},
+                    ttl_seconds=ttl_seconds,
+                    **kwargs,
                 )
                 for text, embedding_vector, text_id, metadata in zip(
                     batch_texts, batch_embedding_vectors, batch_ids, batch_metadatas
@@ -214,9 +219,9 @@ class Cassandra(VectorStore):
         """
         search_metadata = self._filter_to_metadata(filter)
         #
-        hits = self.table.search(
-            embedding_vector=embedding,
-            top_k=k,
+        hits = self.vector_table.metric_ann_search(
+            vector=embedding,
+            n=k,
             metric="cos",
             metric_threshold=None,
             metadata=search_metadata,
@@ -226,11 +231,11 @@ class Cassandra(VectorStore):
         return [
             (
                 Document(
-                    page_content=hit["document"],
+                    page_content=hit["body_blob"],
                     metadata=hit["metadata"],
                 ),
                 0.5 + 0.5 * hit["distance"],
-                hit["document_id"],
+                hit["row_id"],
             )
             for hit in hits
         ]
@@ -339,31 +344,31 @@ class Cassandra(VectorStore):
         """
         search_metadata = self._filter_to_metadata(filter)
 
-        prefetchHits = self.table.search(
-            embedding_vector=embedding,
-            top_k=fetch_k,
+        prefetch_hits = list(self.vector_table.metric_ann_search(
+            vector=embedding,
+            n=fetch_k,
             metric="cos",
             metric_threshold=None,
             metadata=search_metadata,
-        )
+        ))
         # let the mmr utility pick the *indices* in the above array
-        mmrChosenIndices = maximal_marginal_relevance(
+        mmr_indices = maximal_marginal_relevance(
             np.array(embedding, dtype=np.float32),
-            [pfHit["embedding_vector"] for pfHit in prefetchHits],
+            [pf_hit["vector"] for pf_hit in prefetch_hits],
             k=k,
             lambda_mult=lambda_mult,
         )
-        mmrHits = [
-            pfHit
-            for pfIndex, pfHit in enumerate(prefetchHits)
-            if pfIndex in mmrChosenIndices
+        mmr_hits = [
+            pf_hit
+            for pfIndex, pf_hit in enumerate(prefetch_hits)
+            if pfIndex in mmr_indices
         ]
         return [
             Document(
-                page_content=hit["document"],
+                page_content=hit["body_blob"],
                 metadata=hit["metadata"],
             )
-            for hit in mmrHits
+            for hit in mmr_hits
         ]
 
     def max_marginal_relevance_search(
@@ -417,14 +422,14 @@ class Cassandra(VectorStore):
         session: Session = kwargs["session"]
         keyspace: str = kwargs["keyspace"]
         table_name: str = kwargs["table_name"]
-        cassandraStore = cls(
+        cassandra_store = cls(
             embedding=embedding,
             session=session,
             keyspace=keyspace,
             table_name=table_name,
         )
-        cassandraStore.add_texts(texts=texts, metadatas=metadatas)
-        return cassandraStore
+        cassandra_store.add_texts(texts=texts, metadatas=metadatas)
+        return cassandra_store
 
     @classmethod
     def from_documents(

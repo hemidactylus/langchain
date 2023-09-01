@@ -90,6 +90,7 @@ def test_cassandra_max_marginal_relevance_search() -> None:
     docsearch = _vectorstore_from_texts(
         texts, metadatas=metadatas, embedding_class=AngularTwoDimensionalEmbeddings
     )
+    time.sleep(0.5)
     output = docsearch.max_marginal_relevance_search("0.0", k=2, fetch_k=3)
     output_set = {
         (mmr_doc.page_content, mmr_doc.metadata["page"]) for mmr_doc in output
@@ -151,15 +152,15 @@ def test_cassandra_delete() -> None:
     assert len(output) == 1
 
     docsearch.clear()
-    time.sleep(0.3)
+    time.sleep(0.5)
     output = docsearch.similarity_search("foo", k=10)
     assert len(output) == 0
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 #     test_cassandra()
 #     test_cassandra_with_score()
-#     test_cassandra_max_marginal_relevance_search()
+    test_cassandra_max_marginal_relevance_search()
 #     test_cassandra_add_extra()
 #     test_cassandra_no_drop()
-#     test_cassandra_delete()
+    test_cassandra_delete()
