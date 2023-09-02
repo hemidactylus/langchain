@@ -7,7 +7,7 @@ import uuid
 from typing import List, Optional
 
 if typing.TYPE_CHECKING:
-    from cassandra.cluster import Session
+    from cassandra.cluster import Session as CassandraSession
 
 from langchain.schema import (
     BaseChatMessageHistory,
@@ -35,9 +35,10 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
         self,
         session_id: str,
         table_name: str = DEFAULT_TABLE_NAME,
-        session: Optional[Session] = None,
+        session: Optional[CassandraSession] = None,
         keyspace: Optional[str] = None,
-        ttl_seconds: int | None = DEFAULT_TTL_SECONDS,
+        ttl_seconds: Optional[int] = DEFAULT_TTL_SECONDS,
+        skip_provisioning: bool = False,
     ) -> None:
         try:
             from cassio.table.tables import ClusteredCassandraTable
@@ -55,20 +56,19 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
             table=self.table_name,
             session=self.session,
             keyspace=self.keyspace,
+            partition_id=self.session_id,
             primary_key_type=["TEXT", "TIMEUUID"],
             ordering_in_partition="DESC",
             ttl_seconds=self.ttl_seconds,
+            skip_provisioning=skip_provisioning,
         )
 
     @property
     def messages(self) -> List[BaseMessage]:  # type: ignore
         """Retrieve all session messages from DB"""
-        message_blobs = [
-            row["body_blob"]
-            for row in self.blob_history.get_partition(
-                partition_id=self.session_id,
-            )
-        ][::-1]
+        message_blobs = [row["body_blob"] for row in self.blob_history.get_partition()][
+            ::-1
+        ]
         items = [json.loads(message_blob) for message_blob in message_blobs]
         messages = messages_from_dict(items)
         return messages
@@ -77,12 +77,11 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
         """Write a message to the table"""
         this_message_id = uuid.uuid1()
         self.blob_history.put(
-            partition_id=self.session_id,
             row_id=this_message_id,
             body_blob=json.dumps(_message_to_dict(message)),
         )
 
     def clear(self) -> None:
         """Clear session memory from DB"""
-        self.blob_history.delete_partition(partition_id=self.session_id)
+        self.blob_history.delete_partition()
         return None

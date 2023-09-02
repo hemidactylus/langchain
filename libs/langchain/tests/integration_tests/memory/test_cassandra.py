@@ -37,13 +37,21 @@ def _chat_message_history(
     if drop:
         session.execute(f"DROP TABLE IF EXISTS {keyspace}.{table_name}")
     #
-    return CassandraChatMessageHistory(
-        session_id=session_id,
-        session=session,
-        keyspace=keyspace,
-        table_name=table_name,
-        **({} if ttl_seconds is None else {"ttl_seconds": ttl_seconds}),
-    )
+    if ttl_seconds is None:
+        return CassandraChatMessageHistory(
+            session_id=session_id,
+            session=session,
+            keyspace=keyspace,
+            table_name=table_name,
+        )
+    else:
+        return CassandraChatMessageHistory(
+            session_id=session_id,
+            session=session,
+            keyspace=keyspace,
+            table_name=table_name,
+            ttl_seconds=ttl_seconds,
+        )
 
 
 def test_memory_with_message_store() -> None:

@@ -733,10 +733,11 @@ class CassandraCache(BaseCache):
 
     def __init__(
         self,
-        session: CassandraSession,
-        keyspace: str,
+        session: Optional[CassandraSession] = None,
+        keyspace: Optional[str] = None,
         table_name: str = CASSANDRA_CACHE_DEFAULT_TABLE_NAME,
         ttl_seconds: Optional[int] = CASSANDRA_CACHE_DEFAULT_TTL_SECONDS,
+        skip_provisioning: bool = False,
     ):
         """
         Initialize with a ready session and a keyspace name.
@@ -767,6 +768,7 @@ class CassandraCache(BaseCache):
             keys=["llm_string", "prompt"],
             primary_key_type=["TEXT", "TEXT"],
             ttl_seconds=self.ttl_seconds,
+            skip_provisioning=skip_provisioning,
         )
 
     def lookup(self, prompt: str, llm_string: str) -> Optional[RETURN_VAL_TYPE]:
@@ -836,13 +838,14 @@ class CassandraSemanticCache(BaseCache):
 
     def __init__(
         self,
-        session: CassandraSession,
-        keyspace: str,
         embedding: Embeddings,
         table_name: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TABLE_NAME,
+        session: Optional[CassandraSession] = None,
+        keyspace: Optional[str] = None,
         distance_metric: str = CASSANDRA_SEMANTIC_CACHE_DEFAULT_DISTANCE_METRIC,
         score_threshold: float = CASSANDRA_SEMANTIC_CACHE_DEFAULT_SCORE_THRESHOLD,
         ttl_seconds: Optional[int] = CASSANDRA_SEMANTIC_CACHE_DEFAULT_TTL_SECONDS,
+        skip_provisioning: bool = False,
     ):
         """
         Initialize the cache with all relevant parameters.
@@ -897,6 +900,7 @@ class CassandraSemanticCache(BaseCache):
             vector_dimension=self.embedding_dimension,
             ttl_seconds=self.ttl_seconds,
             metadata_indexing=("allow", {"_llm_string_hash"}),
+            skip_provisioning=skip_provisioning,
         )
 
     def _get_embedding_dimension(self) -> int:

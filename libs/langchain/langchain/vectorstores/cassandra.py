@@ -18,7 +18,7 @@ from typing import (
 import numpy as np
 
 if typing.TYPE_CHECKING:
-    from cassandra.cluster import Session
+    from cassandra.cluster import Session as CassandraSession
 
 from langchain.docstore.document import Document
 from langchain.embeddings.base import Embeddings
@@ -69,12 +69,18 @@ class Cassandra(VectorStore):
         self,
         embedding: Embeddings,
         table_name: str,
-        session: Optional[Session] = None,
+        session: Optional[CassandraSession] = None,
         keyspace: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        partitioned: bool = False,
+        partition_id: Optional[str] = None,
+        skip_provisioning: bool = False,
     ) -> None:
         try:
-            from cassio.table import MetadataVectorCassandraTable
+            from cassio.table import (
+                ClusteredMetadataVectorCassandraTable,
+                MetadataVectorCassandraTable,
+            )
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Could not import cassio python package. "
@@ -89,14 +95,35 @@ class Cassandra(VectorStore):
         #
         self._embedding_dimension = None
         #
-        self.vector_table = MetadataVectorCassandraTable(
-            session=session,
-            keyspace=keyspace,
-            table=table_name,
-            vector_dimension=self._get_embedding_dimension(),
-            primary_key_type="TEXT",
-            metadata_indexing="all",
-        )
+        if not partitioned:
+            if partition_id is not None:
+                raise ValueError(
+                    "`partition_id` cannot be supplied on a non-partitioned store."
+                )
+            self.vector_table = MetadataVectorCassandraTable(
+                session=session,
+                keyspace=keyspace,
+                table=table_name,
+                vector_dimension=self._get_embedding_dimension(),
+                primary_key_type="TEXT",
+                metadata_indexing="all",
+                skip_provisioning=skip_provisioning,
+            )
+        else:
+            if partition_id is None:
+                raise ValueError(
+                    "`partition_id` must be supplied for a partitioned store."
+                )
+            self.vector_table = ClusteredMetadataVectorCassandraTable(
+                session=session,
+                keyspace=keyspace,
+                table=table_name,
+                vector_dimension=self._get_embedding_dimension(),
+                primary_key_type=["TEXT", "TEXT"],
+                metadata_indexing="all",
+                partition_id=partition_id,
+                skip_provisioning=skip_provisioning,
+            )
 
     @property
     def embeddings(self) -> Embeddings:
@@ -129,11 +156,14 @@ class Cassandra(VectorStore):
     def delete_by_document_id(self, document_id: str) -> None:
         return self.vector_table.delete(row_id=document_id)
 
-    def delete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
+    def delete(
+        self, ids: Optional[List[str]] = None, batch_size: int = 50, **kwargs: Any
+    ) -> Optional[bool]:
         """Delete by vector IDs.
 
         Args:
             ids: List of ids to delete.
+            batch_size (int, default=16): size of delete batches
 
         Returns:
             Optional[bool]: True if deletion is successful,
@@ -143,8 +173,16 @@ class Cassandra(VectorStore):
         if ids is None:
             raise ValueError("No ids provided to delete.")
 
-        for document_id in ids:
-            self.delete_by_document_id(document_id)
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i : i + batch_size]
+
+            futures = [
+                self.vector_table.delete_async(row_id=document_id)
+                for document_id in batch_ids
+            ]
+            for future in futures:
+                future.result()
+
         return True
 
     def add_texts(
@@ -270,7 +308,7 @@ class Cassandra(VectorStore):
         """
         return [
             (doc, score)
-            for (doc, score, docId) in self.similarity_search_with_score_id_by_vector(
+            for (doc, score, doc_id) in self.similarity_search_with_score_id_by_vector(
                 embedding=embedding,
                 k=k,
                 filter=filter,
@@ -344,13 +382,15 @@ class Cassandra(VectorStore):
         """
         search_metadata = self._filter_to_metadata(filter)
 
-        prefetch_hits = list(self.vector_table.metric_ann_search(
-            vector=embedding,
-            n=fetch_k,
-            metric="cos",
-            metric_threshold=None,
-            metadata=search_metadata,
-        ))
+        prefetch_hits = list(
+            self.vector_table.metric_ann_search(
+                vector=embedding,
+                n=fetch_k,
+                metric="cos",
+                metric_threshold=None,
+                metadata=search_metadata,
+            )
+        )
         # let the mmr utility pick the *indices* in the above array
         mmr_indices = maximal_marginal_relevance(
             np.array(embedding, dtype=np.float32),
@@ -360,8 +400,8 @@ class Cassandra(VectorStore):
         )
         mmr_hits = [
             pf_hit
-            for pfIndex, pf_hit in enumerate(prefetch_hits)
-            if pfIndex in mmr_indices
+            for pf_index, pf_hit in enumerate(prefetch_hits)
+            if pf_index in mmr_indices
         ]
         return [
             Document(
@@ -414,21 +454,16 @@ class Cassandra(VectorStore):
     ) -> CVST:
         """Create a Cassandra vectorstore from raw texts.
 
-        No support for specifying text IDs
-
         Returns:
             a Cassandra vectorstore.
         """
-        session: Session = kwargs["session"]
-        keyspace: str = kwargs["keyspace"]
-        table_name: str = kwargs["table_name"]
         cassandra_store = cls(
             embedding=embedding,
-            session=session,
-            keyspace=keyspace,
-            table_name=table_name,
+            **kwargs,
         )
-        cassandra_store.add_texts(texts=texts, metadatas=metadatas)
+        cassandra_store.add_texts(
+            texts=texts, metadatas=metadatas, batch_size=batch_size
+        )
         return cassandra_store
 
     @classmethod
@@ -441,21 +476,15 @@ class Cassandra(VectorStore):
     ) -> CVST:
         """Create a Cassandra vectorstore from a document list.
 
-        No support for specifying text IDs
-
         Returns:
             a Cassandra vectorstore.
         """
         texts = [doc.page_content for doc in documents]
         metadatas = [doc.metadata for doc in documents]
-        session: Session = kwargs["session"]
-        keyspace: str = kwargs["keyspace"]
-        table_name: str = kwargs["table_name"]
         return cls.from_texts(
             texts=texts,
             metadatas=metadatas,
             embedding=embedding,
-            session=session,
-            keyspace=keyspace,
-            table_name=table_name,
+            batch_size=batch_size,
+            **kwargs,
         )
