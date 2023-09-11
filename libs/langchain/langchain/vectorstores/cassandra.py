@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 import typing
 import uuid
 from typing import (
@@ -50,6 +51,23 @@ class Cassandra(VectorStore):
     """
 
     _embedding_dimension: Union[int, None]
+
+    # Additional 'kwargs' to let through to CassIO "*ann_search" calls
+    CASSIO_SEARCH_KWARGS = {"partition_id"}
+
+    @staticmethod
+    def _filter_ann_search_kwargs(args_dict: Dict[str, Any]) -> Dict[str, Any]:
+        discarded_args = set(args_dict.keys()) - Cassandra.CASSIO_SEARCH_KWARGS
+        if discarded_args:
+            warnings.warn(
+                f"Warning: unrecognized arguments are being purged from a call "
+                f"to the CassIO vector store class: {','.join(discarded_args)}."
+            )
+        return {
+            k: v
+            for k, v in args_dict.items()
+            if k in Cassandra.CASSIO_SEARCH_KWARGS
+        }
 
     @staticmethod
     def _filter_to_metadata(filter_dict: Optional[Dict[str, str]]) -> Dict[str, Any]:
@@ -246,6 +264,7 @@ class Cassandra(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float, str]]:
         """Return docs most similar to embedding vector.
 
@@ -263,6 +282,7 @@ class Cassandra(VectorStore):
             metric="cos",
             metric_threshold=None,
             metadata=search_metadata,
+            **self._filter_ann_search_kwargs(kwargs),
         )
         # We stick to 'cos' distance as it can be normalized on a 0-1 axis
         # (1=most relevant), as required by this class' contract.
@@ -283,12 +303,14 @@ class Cassandra(VectorStore):
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float, str]]:
         embedding_vector = self.embedding.embed_query(query)
         return self.similarity_search_with_score_id_by_vector(
             embedding=embedding_vector,
             k=k,
             filter=filter,
+            **kwargs,
         )
 
     # id-unaware search facilities
@@ -297,6 +319,7 @@ class Cassandra(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Return docs most similar to embedding vector.
 
@@ -312,6 +335,7 @@ class Cassandra(VectorStore):
                 embedding=embedding,
                 k=k,
                 filter=filter,
+                **kwargs,
             )
         ]
 
@@ -327,6 +351,7 @@ class Cassandra(VectorStore):
             embedding_vector,
             k,
             filter=filter,
+            **kwargs,
         )
 
     def similarity_search_by_vector(
@@ -342,6 +367,7 @@ class Cassandra(VectorStore):
                 embedding,
                 k,
                 filter=filter,
+                **kwargs,
             )
         ]
 
@@ -350,12 +376,14 @@ class Cassandra(VectorStore):
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         embedding_vector = self.embedding.embed_query(query)
         return self.similarity_search_with_score_by_vector(
             embedding_vector,
             k,
             filter=filter,
+            **kwargs,
         )
 
     def max_marginal_relevance_search_by_vector(
@@ -389,6 +417,7 @@ class Cassandra(VectorStore):
                 metric="cos",
                 metric_threshold=None,
                 metadata=search_metadata,
+                **self._filter_ann_search_kwargs(kwargs),
             )
         )
         # let the mmr utility pick the *indices* in the above array
@@ -441,6 +470,7 @@ class Cassandra(VectorStore):
             fetch_k,
             lambda_mult=lambda_mult,
             filter=filter,
+            **kwargs,
         )
 
     @classmethod
