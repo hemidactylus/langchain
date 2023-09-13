@@ -126,10 +126,7 @@ def _dumps_generations(generations: RETURN_VAL_TYPE) -> str:
     Each item in the list can be `dumps`ed to a string,
     then we make the whole list of strings into a json-dumped.
     """
-    return json.dumps([
-        dumps(_item)
-        for _item in generations
-    ])
+    return json.dumps([dumps(_item) for _item in generations])
 
 
 def _loads_generations(generations_str: str) -> RETURN_VAL_TYPE:
@@ -149,10 +146,7 @@ def _loads_generations(generations_str: str) -> RETURN_VAL_TYPE:
         RETURN_VAL_TYPE: A list of generations.
     """
     try:
-        return [
-            loads(_item_str)
-            for _item_str in json.loads(generations_str)
-        ]
+        return [loads(_item_str) for _item_str in json.loads(generations_str)]
     except json.JSONDecodeError:
         raise ValueError(
             f"Could not decode json to list of generations: {generations_str}"
