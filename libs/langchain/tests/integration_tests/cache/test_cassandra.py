@@ -81,7 +81,9 @@ def test_cassandra_cache_ttl(cassandra_connection: Tuple[Any, str]) -> None:
 def test_cassandra_semantic_cache(cassandra_connection: Tuple[Any, str]) -> None:
     session, keyspace = cassandra_connection
     sem_cache = CassandraSemanticCache(
-        session=session, keyspace=keyspace, embedding=FakeEmbeddings()
+        session=session,
+        keyspace=keyspace,
+        embedding=FakeEmbeddings(),
     )
     langchain.llm_cache = sem_cache
     llm = FakeLLM()
