@@ -3,13 +3,13 @@ A "convertor"-based prompt template
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping, Union
 
 from langchain.prompts.base import (
     DEFAULT_FORMATTER_MAPPING,
     StringPromptTemplate,
 )
-from langchain.pydantic_v1 import Extra, root_validator
+from langchain.pydantic_v1 import Extra, Field, root_validator
 
 ConvertorType = Callable[[Dict[str, Any]], Dict[str, Any]]
 
@@ -18,6 +18,11 @@ class ConvertorPromptTemplate(StringPromptTemplate):
     @property
     def lc_serializable(self) -> bool:
         return False
+
+    # generalization to accommodate abitrary-type input variables
+    partial_variables: Mapping[str, Union[Any, Callable[[], Any]]] = Field(
+        default_factory=dict
+    )
 
     template: str
     """
@@ -70,6 +75,14 @@ class ConvertorPromptTemplate(StringPromptTemplate):
         return DEFAULT_FORMATTER_MAPPING[self.template_format](
             self.template, **full_kwargs
         )
+
+    # generalization to accommodate abitrary-type input variables
+    def _merge_partial_and_user_variables(self, **kwargs: Any) -> Dict[str, Any]:
+        partial_kwargs = {
+            k: v() if callable(v) else v
+            for k, v in self.partial_variables.items()
+        }
+        return {**partial_kwargs, **kwargs}
 
     @property
     def _prompt_type(self) -> str:
