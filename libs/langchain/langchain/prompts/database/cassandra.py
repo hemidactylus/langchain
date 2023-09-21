@@ -33,6 +33,8 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
 
     field_mapper: FieldMapperType
 
+    input_variables: List[str] = []
+
     admit_nulls: bool = DEFAULT_ADMIT_NULLS
 
     @root_validator(pre=True)
@@ -45,6 +47,7 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
         )
         for k, v in convertor_info.items():
             values[k] = v
+        # values["input_variables"] = values.get("input_variables", [])
         return values
 
     @staticmethod
@@ -55,14 +58,14 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
         admit_nulls: bool,
     ) -> Dict[str, Any]:
         try:
-            from cassio.db_extractor import CassandraExtractor
+            from cassio.db_reader import MultiTableCassandraReader
         except (ImportError, ModuleNotFoundError):
             raise ValueError(
                 "Could not import cassio python package. "
                 "Please install it with `pip install cassio`."
             )
         #
-        _convertor = CassandraExtractor(
+        _convertor = MultiTableCassandraReader(
             session=session,
             keyspace=keyspace,
             field_mapper=field_mapper,
