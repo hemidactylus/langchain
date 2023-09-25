@@ -1,5 +1,5 @@
 """Test Cassandra prompt template."""
-from typing import Tuple
+from typing import Callable, Iterable, Tuple
 import pytest
 
 from cassandra.cluster import Cluster, Session
@@ -12,7 +12,7 @@ C_TABLE_NAME = "nicknames_x"
 
 
 @pytest.fixture(scope="module")
-def extractor_tables():
+def extractor_tables() -> Iterable[Tuple[Session, str, str, str]]:
     # get db connection
     cluster = Cluster()
     session = cluster.connect()
@@ -45,7 +45,7 @@ def extractor_tables():
 
 
 @pytest.mark.usefixtures("extractor_tables")
-def test_cassandra_reader_prompt_template(extractor_tables) -> None:
+def test_cassandra_reader_prompt_template(extractor_tables: Tuple[Session, str, str, str]) -> None:
     session, keyspace, p_table, c_table = extractor_tables
     #
     prompt_template_string = (
@@ -78,7 +78,7 @@ def test_cassandra_reader_prompt_template(extractor_tables) -> None:
     assert result == expected
 
 @pytest.mark.usefixtures("extractor_tables")
-def test_cassandra_reader_prompt_template_admitnulls(extractor_tables):
+def test_cassandra_reader_prompt_template_admitnulls(extractor_tables: Tuple[Session, str, str, str]) -> None:
     session, keyspace, p_table, c_table = extractor_tables
     #
     prompt_template_string = "r_age_t={r_age_t} r_age_t_d={r_age_t_d} r_age={r_age}"

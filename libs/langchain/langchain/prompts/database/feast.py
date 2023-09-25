@@ -73,9 +73,9 @@ class FeastReaderPromptTemplate(ConvertorPromptTemplate):
     @root_validator(pre=True)
     def check_and_provide_convertor(cls, values: Dict) -> Dict:
         convertor_info = cls._prepare_reader_info(
-            values["feature_store"],
-            values["field_mapper"],
-            values.get("admit_nulls", DEFAULT_ADMIT_NULLS),
+            feature_store=values["feature_store"],
+            field_mapper=values["field_mapper"],
+            admit_nulls=values.get("admit_nulls", DEFAULT_ADMIT_NULLS),
         )
         for k, v in convertor_info.items():
             values[k] = v

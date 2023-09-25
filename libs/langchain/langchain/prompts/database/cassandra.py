@@ -5,7 +5,7 @@ Cassandra and making their content into variables in a prompt.
 from __future__ import annotations
 
 import typing
-from typing import Any, Callable, Dict, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 if typing.TYPE_CHECKING:
     from cassandra.cluster import Session
@@ -27,9 +27,9 @@ DEFAULT_ADMIT_NULLS = True
 
 
 class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
-    session: Any  # Session
+    session: Optional[Any] = None  # Session
 
-    keyspace: str
+    keyspace: Optional[str] = None
 
     field_mapper: FieldMapperType
 
@@ -40,10 +40,10 @@ class CassandraReaderPromptTemplate(ConvertorPromptTemplate):
     @root_validator(pre=True)
     def check_and_provide_convertor(cls, values: Dict) -> Dict:
         convertor_info = cls._prepare_reader_info(
-            values["session"],
-            values["keyspace"],
-            values["field_mapper"],
-            values.get("admit_nulls", DEFAULT_ADMIT_NULLS),
+            session=values.get("session"),
+            keyspace=values.get("keyspace"),
+            field_mapper=values["field_mapper"],
+            admit_nulls=values.get("admit_nulls", DEFAULT_ADMIT_NULLS),
         )
         for k, v in convertor_info.items():
             values[k] = v
