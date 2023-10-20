@@ -148,9 +148,9 @@ class Cassandra(VectorStore):
         return self.embedding
 
     @staticmethod
-    def _dont_flip_the_cos_score(distance: float) -> float:
+    def _dont_flip_the_cos_score(similarity0to1: float) -> float:
         # the identity
-        return distance
+        return similarity0to1
 
     def _select_relevance_score_fn(self) -> Callable[[float], float]:
         """
