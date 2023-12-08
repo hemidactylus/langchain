@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 import typing
 import uuid
 from typing import (
@@ -18,7 +19,7 @@ from typing import (
 import numpy as np
 
 if typing.TYPE_CHECKING:
-    from cassandra.cluster import Session
+    from cassandra.cluster import Session as CassandraSession
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -52,6 +53,23 @@ class Cassandra(VectorStore):
 
     _embedding_dimension: Union[int, None]
 
+    # Additional 'kwargs' to let through to CassIO "*ann_search" calls
+    CASSIO_SEARCH_KWARGS = {"partition_id"}
+
+    @staticmethod
+    def _filter_ann_search_kwargs(args_dict: Dict[str, Any]) -> Dict[str, Any]:
+        discarded_args = set(args_dict.keys()) - Cassandra.CASSIO_SEARCH_KWARGS
+        if discarded_args:
+            warnings.warn(
+                f"Warning: unrecognized arguments are being purged from a call "
+                f"to the CassIO vector store class: {','.join(discarded_args)}."
+            )
+        return {
+            k: v
+            for k, v in args_dict.items()
+            if k in Cassandra.CASSIO_SEARCH_KWARGS
+        }
+
     @staticmethod
     def _filter_to_metadata(filter_dict: Optional[Dict[str, str]]) -> Dict[str, Any]:
         if filter_dict is None:
@@ -69,13 +87,19 @@ class Cassandra(VectorStore):
     def __init__(
         self,
         embedding: Embeddings,
-        session: Session,
-        keyspace: str,
         table_name: str,
+        session: Optional[CassandraSession] = None,
+        keyspace: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        partitioned: bool = False,
+        partition_id: Optional[str] = None,
+        skip_provisioning: bool = False,
     ) -> None:
         try:
-            from cassio.vector import VectorTable
+            from cassio.table import (
+                ClusteredMetadataVectorCassandraTable,
+                MetadataVectorCassandraTable,
+            )
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Could not import cassio python package. "
@@ -90,26 +114,48 @@ class Cassandra(VectorStore):
         #
         self._embedding_dimension = None
         #
-        self.table = VectorTable(
-            session=session,
-            keyspace=keyspace,
-            table=table_name,
-            embedding_dimension=self._get_embedding_dimension(),
-            primary_key_type="TEXT",
-        )
+        if not partitioned:
+            if partition_id is not None:
+                raise ValueError(
+                    "`partition_id` cannot be supplied on a non-partitioned store."
+                )
+            self.vector_table = MetadataVectorCassandraTable(
+                session=session,
+                keyspace=keyspace,
+                table=table_name,
+                vector_dimension=self._get_embedding_dimension(),
+                primary_key_type="TEXT",
+                metadata_indexing="all",
+                skip_provisioning=skip_provisioning,
+            )
+        else:
+            if partition_id is None:
+                raise ValueError(
+                    "`partition_id` must be supplied for a partitioned store."
+                )
+            self.vector_table = ClusteredMetadataVectorCassandraTable(
+                session=session,
+                keyspace=keyspace,
+                table=table_name,
+                vector_dimension=self._get_embedding_dimension(),
+                primary_key_type=["TEXT", "TEXT"],
+                metadata_indexing="all",
+                partition_id=partition_id,
+                skip_provisioning=skip_provisioning,
+            )
 
     @property
     def embeddings(self) -> Embeddings:
         return self.embedding
 
     @staticmethod
-    def _dont_flip_the_cos_score(distance: float) -> float:
+    def _dont_flip_the_cos_score(similarity0to1: float) -> float:
         # the identity
-        return distance
+        return similarity0to1
 
     def _select_relevance_score_fn(self) -> Callable[[float], float]:
         """
-        The underlying VectorTable already returns a "score proper",
+        The underlying *CassandraTable already returns a "score proper",
         i.e. one in [0, 1] where higher means more *similar*,
         so here the final score transformation is not reversing the interval:
         """
@@ -124,17 +170,19 @@ class Cassandra(VectorStore):
 
     def clear(self) -> None:
         """Empty the collection."""
-        self.table.clear()
+        self.vector_table.clear()
 
     def delete_by_document_id(self, document_id: str) -> None:
-        return self.table.delete(document_id)
+        return self.vector_table.delete(row_id=document_id)
 
-    def delete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
+    def delete(
+        self, ids: Optional[List[str]] = None, batch_size: int = 50, **kwargs: Any
+    ) -> Optional[bool]:
         """Delete by vector IDs.
-
 
         Args:
             ids: List of ids to delete.
+            batch_size (int, default=50): size of delete batches
 
         Returns:
             Optional[bool]: True if deletion is successful,
@@ -144,8 +192,16 @@ class Cassandra(VectorStore):
         if ids is None:
             raise ValueError("No ids provided to delete.")
 
-        for document_id in ids:
-            self.delete_by_document_id(document_id)
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i : i + batch_size]
+
+            futures = [
+                self.vector_table.delete_async(row_id=document_id)
+                for document_id in batch_ids
+            ]
+            for future in futures:
+                future.result()
+
         return True
 
     def add_texts(
@@ -187,8 +243,13 @@ class Cassandra(VectorStore):
             batch_metadatas = metadatas[i : i + batch_size]
 
             futures = [
-                self.table.put_async(
-                    text, embedding_vector, text_id, metadata, ttl_seconds
+                self.vector_table.put_async(
+                    row_id=text_id,
+                    body_blob=text,
+                    vector=embedding_vector,
+                    metadata=metadata or {},
+                    ttl_seconds=ttl_seconds,
+                    **kwargs,
                 )
                 for text, embedding_vector, text_id, metadata in zip(
                     batch_texts, batch_embedding_vectors, batch_ids, batch_metadatas
@@ -204,6 +265,7 @@ class Cassandra(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float, str]]:
         """Return docs most similar to embedding vector.
 
@@ -215,23 +277,24 @@ class Cassandra(VectorStore):
         """
         search_metadata = self._filter_to_metadata(filter)
         #
-        hits = self.table.search(
-            embedding_vector=embedding,
-            top_k=k,
+        hits = self.vector_table.metric_ann_search(
+            vector=embedding,
+            n=k,
             metric="cos",
             metric_threshold=None,
             metadata=search_metadata,
+            **self._filter_ann_search_kwargs(kwargs),
         )
         # We stick to 'cos' distance as it can be normalized on a 0-1 axis
         # (1=most relevant), as required by this class' contract.
         return [
             (
                 Document(
-                    page_content=hit["document"],
+                    page_content=hit["body_blob"],
                     metadata=hit["metadata"],
                 ),
                 0.5 + 0.5 * hit["distance"],
-                hit["document_id"],
+                hit["row_id"],
             )
             for hit in hits
         ]
@@ -241,12 +304,14 @@ class Cassandra(VectorStore):
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float, str]]:
         embedding_vector = self.embedding.embed_query(query)
         return self.similarity_search_with_score_id_by_vector(
             embedding=embedding_vector,
             k=k,
             filter=filter,
+            **kwargs,
         )
 
     # id-unaware search facilities
@@ -255,6 +320,7 @@ class Cassandra(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Return docs most similar to embedding vector.
 
@@ -266,10 +332,11 @@ class Cassandra(VectorStore):
         """
         return [
             (doc, score)
-            for (doc, score, docId) in self.similarity_search_with_score_id_by_vector(
+            for (doc, score, doc_id) in self.similarity_search_with_score_id_by_vector(
                 embedding=embedding,
                 k=k,
                 filter=filter,
+                **kwargs,
             )
         ]
 
@@ -285,6 +352,7 @@ class Cassandra(VectorStore):
             embedding_vector,
             k,
             filter=filter,
+            **kwargs,
         )
 
     def similarity_search_by_vector(
@@ -300,6 +368,7 @@ class Cassandra(VectorStore):
                 embedding,
                 k,
                 filter=filter,
+                **kwargs,
             )
         ]
 
@@ -308,12 +377,14 @@ class Cassandra(VectorStore):
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         embedding_vector = self.embedding.embed_query(query)
         return self.similarity_search_with_score_by_vector(
             embedding_vector,
             k,
             filter=filter,
+            **kwargs,
         )
 
     def max_marginal_relevance_search_by_vector(
@@ -340,31 +411,34 @@ class Cassandra(VectorStore):
         """
         search_metadata = self._filter_to_metadata(filter)
 
-        prefetchHits = self.table.search(
-            embedding_vector=embedding,
-            top_k=fetch_k,
-            metric="cos",
-            metric_threshold=None,
-            metadata=search_metadata,
+        prefetch_hits = list(
+            self.vector_table.metric_ann_search(
+                vector=embedding,
+                n=fetch_k,
+                metric="cos",
+                metric_threshold=None,
+                metadata=search_metadata,
+                **self._filter_ann_search_kwargs(kwargs),
+            )
         )
         # let the mmr utility pick the *indices* in the above array
-        mmrChosenIndices = maximal_marginal_relevance(
+        mmr_indices = maximal_marginal_relevance(
             np.array(embedding, dtype=np.float32),
-            [pfHit["embedding_vector"] for pfHit in prefetchHits],
+            [pf_hit["vector"] for pf_hit in prefetch_hits],
             k=k,
             lambda_mult=lambda_mult,
         )
-        mmrHits = [
-            pfHit
-            for pfIndex, pfHit in enumerate(prefetchHits)
-            if pfIndex in mmrChosenIndices
+        mmr_hits = [
+            pf_hit
+            for pf_index, pf_hit in enumerate(prefetch_hits)
+            if pf_index in mmr_indices
         ]
         return [
             Document(
-                page_content=hit["document"],
+                page_content=hit["body_blob"],
                 metadata=hit["metadata"],
             )
-            for hit in mmrHits
+            for hit in mmr_hits
         ]
 
     def max_marginal_relevance_search(
@@ -397,6 +471,7 @@ class Cassandra(VectorStore):
             fetch_k,
             lambda_mult=lambda_mult,
             filter=filter,
+            **kwargs,
         )
 
     @classmethod
@@ -410,22 +485,17 @@ class Cassandra(VectorStore):
     ) -> CVST:
         """Create a Cassandra vectorstore from raw texts.
 
-        No support for specifying text IDs
-
         Returns:
             a Cassandra vectorstore.
         """
-        session: Session = kwargs["session"]
-        keyspace: str = kwargs["keyspace"]
-        table_name: str = kwargs["table_name"]
-        cassandraStore = cls(
+        cassandra_store = cls(
             embedding=embedding,
-            session=session,
-            keyspace=keyspace,
-            table_name=table_name,
+            **kwargs,
         )
-        cassandraStore.add_texts(texts=texts, metadatas=metadatas)
-        return cassandraStore
+        cassandra_store.add_texts(
+            texts=texts, metadatas=metadatas, batch_size=batch_size
+        )
+        return cassandra_store
 
     @classmethod
     def from_documents(
@@ -437,21 +507,15 @@ class Cassandra(VectorStore):
     ) -> CVST:
         """Create a Cassandra vectorstore from a document list.
 
-        No support for specifying text IDs
-
         Returns:
             a Cassandra vectorstore.
         """
         texts = [doc.page_content for doc in documents]
         metadatas = [doc.metadata for doc in documents]
-        session: Session = kwargs["session"]
-        keyspace: str = kwargs["keyspace"]
-        table_name: str = kwargs["table_name"]
         return cls.from_texts(
             texts=texts,
             metadatas=metadatas,
             embedding=embedding,
-            session=session,
-            keyspace=keyspace,
-            table_name=table_name,
+            batch_size=batch_size,
+            **kwargs,
         )

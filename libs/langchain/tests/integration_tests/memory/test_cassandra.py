@@ -2,12 +2,13 @@ import os
 import time
 from typing import Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from cassandra.cluster import Cluster
 
 from langchain.memory import ConversationBufferMemory
 from langchain.memory.chat_message_histories.cassandra import (
     CassandraChatMessageHistory,
 )
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 def _chat_message_history(
@@ -15,8 +16,6 @@ def _chat_message_history(
     drop: bool = True,
     ttl_seconds: Optional[int] = None,
 ) -> CassandraChatMessageHistory:
-    from cassandra.cluster import Cluster
-
     keyspace = "cmh_test_keyspace"
     table_name = "cmh_test_table"
     # get db connection
@@ -38,13 +37,21 @@ def _chat_message_history(
     if drop:
         session.execute(f"DROP TABLE IF EXISTS {keyspace}.{table_name}")
     #
-    return CassandraChatMessageHistory(
-        session_id=session_id,
-        session=session,
-        keyspace=keyspace,
-        table_name=table_name,
-        **({} if ttl_seconds is None else {"ttl_seconds": ttl_seconds}),
-    )
+    if ttl_seconds is None:
+        return CassandraChatMessageHistory(
+            session_id=session_id,
+            session=session,
+            keyspace=keyspace,
+            table_name=table_name,
+        )
+    else:
+        return CassandraChatMessageHistory(
+            session_id=session_id,
+            session=session,
+            keyspace=keyspace,
+            table_name=table_name,
+            ttl_seconds=ttl_seconds,
+        )
 
 
 def test_memory_with_message_store() -> None:
