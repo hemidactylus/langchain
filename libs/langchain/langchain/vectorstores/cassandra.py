@@ -38,6 +38,16 @@ class Cassandra(VectorStore):
 
     Visit the cassio.org website for extensive quickstarts and code examples.
 
+    Constructor args:
+        non_searchable_metadata_fields (List[str], default []):
+            Optionally specify a list of field names in the metadata
+            that will *not* be indexed for later filtering during searches.
+            Useful e.g. for very large pieces of metadata that you'll never
+            need to use as part of the query and you only need to retrieve
+            back with the rest of the document from a search.
+            Important: once you commit to a choice for a given vector store,
+            changing this value later might lead to inconsistently-stored data.
+
     Example:
         .. code-block:: python
 
@@ -91,6 +101,7 @@ class Cassandra(VectorStore):
         session: Optional[CassandraSession] = None,
         keyspace: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        non_searchable_metadata_fields: List[str] = [],
         partitioned: bool = False,
         partition_id: Optional[str] = None,
         skip_provisioning: bool = False,
@@ -125,7 +136,7 @@ class Cassandra(VectorStore):
                 table=table_name,
                 vector_dimension=self._get_embedding_dimension(),
                 primary_key_type="TEXT",
-                metadata_indexing="all",
+                metadata_indexing=("default_to_searchable", non_searchable_metadata_fields),
                 skip_provisioning=skip_provisioning,
             )
         else:
@@ -139,7 +150,7 @@ class Cassandra(VectorStore):
                 table=table_name,
                 vector_dimension=self._get_embedding_dimension(),
                 primary_key_type=["TEXT", "TEXT"],
-                metadata_indexing="all",
+                metadata_indexing=("default_to_searchable", non_searchable_metadata_fields),
                 partition_id=partition_id,
                 skip_provisioning=skip_provisioning,
             )
