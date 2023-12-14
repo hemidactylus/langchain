@@ -39,6 +39,19 @@ class Cassandra(VectorStore):
     Visit the cassio.org website for extensive quickstarts and code examples.
 
     Constructor args:
+
+        embedding (langchain_core.embeddings.Embeddings): the embedding
+            model to use to turn input texts into embedding vectors.
+        table_name (str): name of the database table that'll be created, if not
+            present yet, to contain the vector store entries.
+        session (cassandra.cluster.Session, default None): database connection.
+            If not supplied, falls back to the global connection previously set
+            through cassio.init(...). If that is also not set, an error is raised.
+        keyspace (str, default None): keyspace for the database vector table.
+            If not supplied, falls back to the global value previously set
+            through cassio.init(...). If that is also not set, an error is raised.
+        ttl_seconds (int, default None): Time-to-live for storing entries in
+            seconds. If not supplied, entries will persist indefinitely.
         non_searchable_metadata_fields (List[str], default []):
             Optionally specify a list of field names in the metadata
             that will *not* be indexed for later filtering during searches.
@@ -47,6 +60,19 @@ class Cassandra(VectorStore):
             back with the rest of the document from a search.
             Important: once you commit to a choice for a given vector store,
             changing this value later might lead to inconsistently-stored data.
+        partitioned (bool, default False): whether this is a partitioned
+            vector store. If you'll have entries grouped in distinct
+            *partitions* (e.g. a set of vectors per each user_id),
+            and anticipate running most ANN searches on a single partition,
+            this would improve ANN performance greatly.
+        partition_id: (str, default None): on partitioned vector stores,
+            you can specify a partition_id for the whole instance - as opposed
+            to supplying the partition_id parameter to method invocations
+            (in which case the latter takes precedence)
+        skip_provisioning (bool, default False): do not bother creating
+            the database table and indexes, assuming they exist already.
+            Use only when you know the vector store has been already created
+            on DB.
 
     Example:
         .. code-block:: python
@@ -56,9 +82,12 @@ class Cassandra(VectorStore):
 
                 embeddings = OpenAIEmbeddings()
                 session = ...             # create your Cassandra session object
-                keyspace = 'my_keyspace'  # the keyspace should exist already
-                table_name = 'my_vector_store'
-                vectorstore = Cassandra(embeddings, session, keyspace, table_name)
+                vectorstore = Cassandra(
+                    embeddings=embeddings,
+                    session=session,
+                    keyspace="my_keyspace",  # it must exist on DB already
+                    table_name="my_store",
+                )
     """
 
     _embedding_dimension: Union[int, None]

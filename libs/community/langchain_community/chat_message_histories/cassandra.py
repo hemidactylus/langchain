@@ -26,11 +26,22 @@ class CassandraChatMessageHistory(BaseChatMessageHistory):
     Args:
         session_id: arbitrary key that is used to store the messages
             of a single chat session.
-        session: a Cassandra `Session` object (an open DB connection)
-        keyspace: name of the keyspace to use.
-        table_name: name of the table to use.
-        ttl_seconds: time-to-live (seconds) for automatic expiration
-            of stored entries. None (default) for no expiration.
+
+        table_name (str, default "message_store"): name of the database table
+            that'll be created, if not present yet, to contain the
+            message history entries.
+        session (cassandra.cluster.Session, default None): database connection.
+            If not supplied, falls back to the global connection previously set
+            through cassio.init(...). If that is also not set, an error is raised.
+        keyspace (str, default None): keyspace for the database table.
+            If not supplied, falls back to the global value previously set
+            through cassio.init(...). If that is also not set, an error is raised.
+        ttl_seconds (int, default None): Time-to-live for storing entries in
+            seconds. If not supplied, entries will persist indefinitely.
+        skip_provisioning (bool, default False): do not bother creating
+            the database table and indexes, assuming they exist already.
+            Use only when you know the chat history table has been already
+            created on DB.
     """
 
     def __init__(
