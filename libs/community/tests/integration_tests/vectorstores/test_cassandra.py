@@ -34,7 +34,7 @@ def _vectorstore_from_texts(
         table_name = f"{_p_prefix}vec_table"
     # get db connection
     if "CASSANDRA_CONTACT_POINTS" in os.environ:
-        contact_points = os.environ["CONTACT_POINTS"].split(",")
+        contact_points = os.environ["CASSANDRA_CONTACT_POINTS"].split(",")
         cluster = Cluster(contact_points)
     else:
         cluster = Cluster()
