@@ -1,4 +1,5 @@
 """Test Cassandra prompt template."""
+import os
 from typing import Iterable, Tuple
 
 import cassio
@@ -15,7 +16,12 @@ C_TABLE_NAME = "nicknames_x"
 @pytest.fixture(scope="module")
 def extractor_tables() -> Iterable[Tuple[Session, str, str, str]]:
     # get db connection
-    cluster = Cluster()
+    if "CASSANDRA_CONTACT_POINTS" in os.environ:
+        contact_points = os.environ["CASSANDRA_CONTACT_POINTS"].split(",")
+        cluster = Cluster(contact_points)
+    else:
+        cluster = Cluster()
+    #
     session = cluster.connect()
     # prepare DB
     session.execute(

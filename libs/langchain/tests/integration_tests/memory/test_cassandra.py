@@ -3,12 +3,12 @@ import time
 from typing import Optional
 
 from cassandra.cluster import Cluster
+from langchain_core.messages import AIMessage, HumanMessage
 
 from langchain.memory import ConversationBufferMemory
 from langchain.memory.chat_message_histories.cassandra import (
     CassandraChatMessageHistory,
 )
-from langchain_core.messages import AIMessage, HumanMessage
 
 
 def _chat_message_history(
@@ -20,7 +20,7 @@ def _chat_message_history(
     table_name = "cmh_test_table"
     # get db connection
     if "CASSANDRA_CONTACT_POINTS" in os.environ:
-        contact_points = os.environ["CONTACT_POINTS"].split(",")
+        contact_points = os.environ["CASSANDRA_CONTACT_POINTS"].split(",")
         cluster = Cluster(contact_points)
     else:
         cluster = Cluster()

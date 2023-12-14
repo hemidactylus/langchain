@@ -5,7 +5,6 @@ from typing import List, Optional, Type
 
 import pytest
 from cassandra.cluster import Cluster
-
 from langchain_core.documents import Document
 
 from langchain_community.vectorstores import Cassandra

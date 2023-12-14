@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import warnings
 import typing
 import uuid
+import warnings
 from typing import (
     Any,
     Callable,
@@ -25,7 +25,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
 
-from langchain.vectorstores.utils import maximal_marginal_relevance
+from langchain_community.vectorstores.utils import maximal_marginal_relevance
 
 CVST = TypeVar("CVST", bound="Cassandra")
 
@@ -104,9 +104,7 @@ class Cassandra(VectorStore):
                 f"to the CassIO vector store class: {','.join(discarded_args)}."
             )
         return {
-            k: v
-            for k, v in args_dict.items()
-            if k in Cassandra.CASSIO_SEARCH_KWARGS
+            k: v for k, v in args_dict.items() if k in Cassandra.CASSIO_SEARCH_KWARGS
         }
 
     @staticmethod
@@ -165,7 +163,10 @@ class Cassandra(VectorStore):
                 table=table_name,
                 vector_dimension=self._get_embedding_dimension(),
                 primary_key_type="TEXT",
-                metadata_indexing=("default_to_searchable", non_searchable_metadata_fields),
+                metadata_indexing=(
+                    "default_to_searchable",
+                    non_searchable_metadata_fields,
+                ),
                 skip_provisioning=skip_provisioning,
             )
         else:
@@ -179,7 +180,10 @@ class Cassandra(VectorStore):
                 table=table_name,
                 vector_dimension=self._get_embedding_dimension(),
                 primary_key_type=["TEXT", "TEXT"],
-                metadata_indexing=("default_to_searchable", non_searchable_metadata_fields),
+                metadata_indexing=(
+                    "default_to_searchable",
+                    non_searchable_metadata_fields,
+                ),
                 partition_id=partition_id,
                 skip_provisioning=skip_provisioning,
             )
