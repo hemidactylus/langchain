@@ -34,6 +34,10 @@ from langchain_core.prompts.chat import (
     MessagesPlaceholder,
     SystemMessagePromptTemplate,
 )
+from langchain_core.prompts.converter_prompt_template import (
+    ConverterPromptTemplate,
+    ConverterType,
+)
 from langchain_core.prompts.few_shot import (
     FewShotChatMessagePromptTemplate,
     FewShotPromptTemplate,
@@ -56,6 +60,8 @@ __all__ = [
     "BasePromptTemplate",
     "ChatMessagePromptTemplate",
     "ChatPromptTemplate",
+    "ConverterPromptTemplate",
+    "ConverterType",
     "FewShotPromptTemplate",
     "FewShotPromptWithTemplates",
     "FewShotChatMessagePromptTemplate",
